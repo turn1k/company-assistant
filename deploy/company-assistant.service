@@ -1,0 +1,26 @@
+[Unit]
+Description=Company Assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=assistant
+Group=assistant
+WorkingDirectory=/opt/company-assistant
+EnvironmentFile=/etc/company-assistant.env
+ExecStart=/usr/bin/node /opt/company-assistant/server.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/company-assistant
+MemoryMax=6G
+LimitNOFILE=8192
+TimeoutStopSec=240
+
+[Install]
+WantedBy=multi-user.target

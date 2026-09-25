@@ -1,0 +1,30 @@
+{
+  "name": "company-assistant-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Корпоративный помощник",
+  "author": "Company Assistant",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.company.assistant",
+    "productName": "Company Assistant",
+    "files": ["main.cjs", "preload.cjs", "setup.html", "setup.js", "setup.css"],
+    "directories": { "output": "dist" },
+    "win": { "target": ["nsis"], "signAndEditExecutable": false },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "perMachine": false },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "extendInfo": { "NSCameraUsageDescription": "Камера используется для снимков, которые вы прикрепляете к запросу." }
+    }
+  }
+}

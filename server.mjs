@@ -30,6 +30,8 @@ function json(res, status, value) { res.writeHead(status, { 'Content-Type': 'app
 export async function createApplication(options = {}) {
   const directory = path.resolve(options.dataDir || process.env.DATA_DIR || path.join(root, 'data'));
   const db = openStore(directory);
+  // On restart, a pending API request may already have incurred a charge.
+  db.prepare("UPDATE usage SET status='uncertain' WHERE status='reserved'").run();
   const origin = options.origin || process.env.APP_ORIGIN || 'http://localhost:3100';
   const secure = new URL(origin).protocol === 'https:';
   if (!secure && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(origin).hostname)) throw new Error('Внешний APP_ORIGIN должен использовать HTTPS.');
