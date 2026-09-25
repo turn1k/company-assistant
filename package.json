@@ -1,0 +1,22 @@
+{
+  "name": "company-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Корпоративный помощник: веб, Windows и macOS",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "admin": "node --env-file-if-exists=.env scripts/create-admin.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "exceljs": "^4.4.0",
+    "mammoth": "^1.11.0",
+    "maxmind": "^5.0.0",
+    "pdfjs-dist": "^5.4.0",
+    "sharp": "^0.34.0"
+  },
+  "pnpm": { "onlyBuiltDependencies": ["sharp"] }
+}
