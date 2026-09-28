@@ -30,7 +30,6 @@ function updateShell() {
   $('#usage-percent').textContent = `${percent}%`; $('#usage-bar').value = percent;
   $('#usage-label').textContent = `${number(state.usage.tokens)} / ${number(state.limits.dailyTokens)} токенов`;
   $('#file-limits').textContent = `До ${state.limits.files} файлов · ${state.limits.fileMB} МБ на файл · ${state.limits.totalMB} МБ суммарно`;
-  $('#provider-status').textContent = state.configured ? 'DeepSeek · Подключён' : 'DeepSeek · Не настроен';
   $('#service-banner').hidden = state.configured;
   $('#service-banner').textContent = 'Интерфейс готов к работе. Для ответов администратору нужно добавить API-ключ DeepSeek на сервере.';
   $('#limit-warning').hidden = percent < 80 && state.usage.usd < state.limits.dailyUSD * .8;
@@ -72,7 +71,7 @@ $('#login-form').onsubmit = async event => {
 };
 async function logout() { try { await api('/api/logout', { method: 'POST' }); signOutView(); } catch (error) { toast(error.message); } }
 $('#logout').onclick = logout;
-function showView(next) { view = next; $('#chat-view').hidden = view !== 'chat'; $('#admin-view').hidden = view !== 'admin'; $('#nav-chat').classList.toggle('active', view === 'chat'); $('#nav-admin').classList.toggle('active', view === 'admin'); $('#page-title').textContent = view === 'chat' ? 'Ваш рабочий помощник' : 'Управление пространством'; $('#section-label').textContent = view === 'chat' ? 'ЧАТ' : 'АДМИНИСТРИРОВАНИЕ'; if (view === 'admin') loadAdmin(); }
+function showView(next) { view = next; $('#chat-view').hidden = view !== 'chat'; $('#admin-view').hidden = view !== 'admin'; $('#nav-chat').classList.toggle('active', view === 'chat'); $('#nav-admin').classList.toggle('active', view === 'admin'); $('#page-title').textContent = view === 'chat' ? 'Ваш рабочий помощник' : 'Управление пространством'; if (view === 'admin') loadAdmin(); }
 $('#nav-chat').onclick = () => showView('chat'); $('#nav-admin').onclick = () => showView('admin');
 $('#last-request').onclick = () => { showView('chat'); renderMessages(); $('#conversation').scrollTop = 0; };
 document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => { $('#prompt').value = button.dataset.prompt; $('#prompt').focus(); });
