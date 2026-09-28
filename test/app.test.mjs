@@ -11,9 +11,9 @@ import sharp from 'sharp';
 import ExcelJS from 'exceljs';
 
 const password = 'Test-only-password-123';
-async function fixture(t, provider) {
+async function fixture(t, provider, options = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'company-assistant-test-'));
-  const app = await createApplication({ dataDir: directory, origin: 'http://localhost', provider: provider || (async () => ({ choices: [{ message: { content: 'Проверенный ответ' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } })) });
+  const app = await createApplication({ dataDir: directory, origin: 'http://localhost', provider: provider || (async () => ({ choices: [{ message: { content: 'Проверенный ответ' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } })), ...options });
   const hash = await hashPassword(password);
   const ids = {};
   for (const [login, role] of [['admin', 'admin'], ['alice', 'user'], ['bob', 'user']]) {
@@ -169,4 +169,42 @@ test('DOCX, XLSX and text PDF contents are extracted without executing content',
   const pdfFile = { name: 'report.pdf', ext: '.pdf', path: path.join(f.directory, 'pdf') };
   await writeFile(pdfFile.path, pdf);
   assert.match((await parseFile(pdfFile, 32000)).text, /Quarterly revenue: 4200/);
+});
+
+test('Luna HTTP contract sends documents and photos, disables storage, bills usage and handles rejection', async t => {
+  let mode = 'ok', request;
+  const f = await fixture(t, null, { provider: undefined, apiKey: 'test-only-not-a-real-key', providerFetch: async (url, init) => {
+    request = JSON.parse(init.body);
+    assert.equal(url, 'https://api.openai.com/v1/chat/completions');
+    assert.equal(init.headers.Authorization, 'Bearer test-only-not-a-real-key');
+    if (mode === 'timeout') throw new DOMException('Timed out', 'TimeoutError');
+    if (mode === 'quota') return Response.json({ error: { code: 'insufficient_quota', message: 'do not expose raw provider text' } }, { status: 429 });
+    if (mode === 'key') return Response.json({ error: { code: 'invalid_api_key' } }, { status: 401 });
+    return Response.json({ choices: [{ message: { content: 'Luna answer' }, finish_reason: 'length' }], usage: { prompt_tokens: 1000, completion_tokens: 100 } });
+  } });
+  const cookie = await f.login('alice');
+  const photo = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#ffffff' } }).png().toBuffer();
+  const response = await f.call('/api/query', { cookie, body: queryForm('Read these', [['doc.txt', 'Document content'], ['photo.png', photo, 'image/png']]) });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(request.model, 'gpt-6-luna');
+  assert.equal(request.reasoning_effort, 'none');
+  assert.equal(request.max_completion_tokens, defaults.outputTokens);
+  assert.equal(request.max_tokens, undefined);
+  assert.equal(request.thinking, undefined);
+  assert.equal(request.store, false);
+  assert.equal(request.service_tier, 'default');
+  assert.match(request.messages[1].content.find(x => x.text?.includes('Document content')).text, /doc.txt/);
+  assert.equal(request.messages[1].content.find(x => x.type === 'image_url').image_url.detail, 'high');
+  assert.match(body.latest.answer, /лимиту выходных токенов/);
+  assert.ok(Math.abs(body.usage.usd - 0.00015) < 1e-10);
+  for (const [failure, status, message] of [['quota', 502, /баланс или бюджет/], ['key', 502, /API-ключ/], ['timeout', 504, /вовремя/]]) {
+    mode = failure;
+    const failed = await f.call('/api/query', { cookie, body: queryForm('fail') });
+    assert.equal(failed.status, status);
+    assert.match((await failed.json()).error, message);
+    assert.equal(f.app.db.prepare('SELECT id FROM latest WHERE user_id=?').get(f.ids.alice).id, body.latest.id);
+  }
+  assert.equal(f.app.db.prepare("SELECT COUNT(*) n FROM usage WHERE status='uncertain'").get().n, 1);
+  assert.equal(f.app.db.prepare('SELECT COUNT(*) n FROM usage').get().n, 2);
 });

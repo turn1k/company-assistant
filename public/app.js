@@ -18,7 +18,7 @@ async function api(url, options = {}) {
 function signOutView() { state = null; files = []; busy = false; closeCamera(); $('#workspace').hidden = true; $('#login-screen').hidden = false; $('#messages').replaceChildren(); $('#prompt').value = ''; if ($('#form-dialog').open) $('#form-dialog').close(); }
 function setBusy(value, label) {
   busy = value; $('#send-button').disabled = value; $('#processing').hidden = !value;
-  $('#processing-label').textContent = label || 'DeepSeek готовит ответ…';
+  $('#processing-label').textContent = label || 'Готовим ответ…';
   $('#send-button').innerHTML = value ? 'Обработка…' : 'Отправить <span aria-hidden="true">↑</span>';
 }
 function updateShell() {
@@ -31,7 +31,7 @@ function updateShell() {
   $('#usage-label').textContent = `${number(state.usage.tokens)} / ${number(state.limits.dailyTokens)} токенов`;
   $('#file-limits').textContent = `До ${state.limits.files} файлов · ${state.limits.fileMB} МБ на файл · ${state.limits.totalMB} МБ суммарно`;
   $('#service-banner').hidden = state.configured;
-  $('#service-banner').textContent = 'Интерфейс готов к работе. Для ответов администратору нужно добавить API-ключ DeepSeek на сервере.';
+  $('#service-banner').textContent = 'Интерфейс готов к работе. Для ответов администратору нужно добавить API-ключ OpenAI на сервере.';
   $('#limit-warning').hidden = percent < 80 && state.usage.usd < state.limits.dailyUSD * .8;
   $('#limit-warning').textContent = `Вы приближаетесь к дневному лимиту. Использовано ${number(state.usage.tokens)} токенов; расчётный расход ${money(state.usage.usd)}. Сброс в полночь (${state.timezone}).`;
   $('#last-request').disabled = !state.latest; $('#last-request').textContent = state.latest?.prompt || 'Здесь появится ваш запрос';
@@ -96,7 +96,7 @@ let sending = false;
 $('#query-form').onsubmit = async event => {
   event.preventDefault(); if (busy || !state) return;
   if (!$('#prompt').value.trim() && !files.length) { $('#prompt').focus(); toast('Введите запрос или прикрепите файл.'); return; }
-  if (!state.configured) { toast('DeepSeek ещё не подключён. Обратитесь к администратору.'); return; }
+  if (!state.configured) { toast('OpenAI ещё не подключён. Обратитесь к администратору.'); return; }
   const form = new FormData(); form.append('prompt', $('#prompt').value); files.forEach(f => form.append('files', f));
   sending = true; setBusy(true, 'Загружаем и читаем файлы…');
   try {
@@ -163,8 +163,8 @@ function renderAdmin() {
   let html = `<div class="admin-intro"><p class="muted">Сотрудники, доступ и использование сервиса</p><button id="add-user" class="primary">＋ Создать аккаунт</button></div><div class="metrics"><div class="metric"><p>Аккаунты</p><strong>${data.users.length}</strong><small>${data.users.filter(u => !u.blocked).length} с доступом</small></div><div class="metric"><p>Подключений онлайн</p><strong>${data.online}</strong><small>Активны за 2 минуты</small></div><div class="metric"><p>Токены сегодня</p><strong>${number(total)}</strong><small>Вход + ответ</small></div><div class="metric"><p>Расход за месяц</p><strong>${money(cost)}</strong><small>Верхняя оценка</small></div></div><div class="tabs" role="tablist" aria-label="Администрирование">${[['users','Сотрудники'],['sessions','Подключения'],['limits','Лимиты']].map(([key,name]) => `<button role="tab" aria-selected="${adminTab===key}" class="${adminTab===key?'active':''}" data-tab="${key}">${name}</button>`).join('')}</div>`;
   if (adminTab === 'users') html += `<div class="table-wrap"><table><thead><tr><th>Сотрудник</th><th>Доступ</th><th>Онлайн / сеансов</th><th>Токены сегодня</th><th>Расход день / месяц</th><th>Управление</th></tr></thead><tbody>${data.users.map(u => `<tr><td><strong>${esc(u.name)}</strong><small>${esc(u.login)}${u.role==='admin'?' · Администратор':''}</small></td><td><span class="badge ${u.blocked?'off':'on'}">${u.blocked?'Заблокирован':'Активен'}</span></td><td>${u.online} / ${u.sessions}</td><td>${number(u.today.tokens)}<small>из ${number(u.effectiveLimits.dailyTokens)}</small></td><td>${money(u.today.usd)} / ${money(u.month.usd)}</td><td><button class="secondary" data-edit="${u.id}">Настроить</button></td></tr>`).join('')}</tbody></table></div><p class="section-note">Дневной период: ${esc(data.timezone)}. Расход рассчитан по тарифам ${money(data.prices.input)} за 1 млн входящих и ${money(data.prices.output)} за 1 млн выходящих токенов, без скидок провайдера.</p>`;
   if (adminTab === 'sessions') html += `<div class="table-wrap"><table><thead><tr><th>Сотрудник</th><th>Устройство / клиент</th><th>Откуда</th><th>Вход / активность</th><th>Статус</th><th></th></tr></thead><tbody>${data.sessions.map(s => `<tr><td><strong>${esc(s.name)}</strong><small>${esc(s.login)}</small></td><td>${esc(s.device)}${s.current?'<small>Ваш текущий сеанс</small>':''}</td><td>${esc(s.ip)}<small>${esc(s.location)}</small></td><td>${esc(date(s.created))}<small>${esc(date(s.seen))}</small></td><td><span class="badge ${s.online?'on':''}">${s.online?'Онлайн':'Неактивен'}</span></td><td><button class="secondary danger" data-revoke="${s.id}">Завершить</button></td></tr>`).join('') || '<tr><td colspan="6">Активных сеансов нет.</td></tr>'}</tbody></table></div><p class="section-note">Здесь отображаются сеансы, а не уникальные физические устройства. Разные браузеры могут считаться отдельно. Страна и город по IP приблизительны; VPN меняет отображаемый адрес. Обновление каждые 30 секунд.</p>`;
-  if (adminTab === 'limits') html += `<div class="settings-card"><h3>Лимиты по умолчанию</h3><p class="small muted">Применяются ко всем сотрудникам без персональных исключений. Один запрос на аккаунт может выполняться одновременно; разные сотрудники работают независимо.</p><form id="global-limits">${limitInputs(data.limits)}<p class="error" role="alert"></p><button class="primary">Сохранить лимиты</button></form><p class="section-note">Перед отправкой резервируем верхнюю оценку входа и максимальный ответ. После ответа учитываем фактические токены DeepSeek. Большие документы могут отклоняться раньше лимита из-за консервативной оценки.</p></div>`;
-  if (data.uncertain) html += `<div class="notice">Запросов с неподтверждённым расходом: ${data.uncertain}. Для них сохранён максимальный резерв. Сверьте расход с кабинетом DeepSeek.</div>`;
+  if (adminTab === 'limits') html += `<div class="settings-card"><h3>Лимиты по умолчанию</h3><p class="small muted">Применяются ко всем сотрудникам без персональных исключений. Один запрос на аккаунт может выполняться одновременно; разные сотрудники работают независимо.</p><form id="global-limits">${limitInputs(data.limits)}<p class="error" role="alert"></p><button class="primary">Сохранить лимиты</button></form><p class="section-note">Перед отправкой резервируем верхнюю оценку входа и максимальный ответ. После ответа учитываем фактические токены OpenAI. Большие документы могут отклоняться раньше лимита из-за консервативной оценки.</p></div>`;
+  if (data.uncertain) html += `<div class="notice">Запросов с неподтверждённым расходом: ${data.uncertain}. Для них сохранён максимальный резерв. Сверьте расход с кабинетом OpenAI.</div>`;
   $('#admin-content').innerHTML = html;
   $('#add-user').onclick = createUserDialog;
   document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => { adminTab = button.dataset.tab; renderAdmin(); });
