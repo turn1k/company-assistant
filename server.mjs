@@ -32,7 +32,9 @@ export async function createApplication(options = {}) {
   const db = openStore(directory);
   // On restart, a pending API request may already have incurred a charge.
   db.prepare("UPDATE usage SET status='uncertain' WHERE status='reserved'").run();
-  const origin = options.origin || process.env.APP_ORIGIN || 'http://localhost:3100';
+  const originURL = new URL(options.origin || process.env.APP_ORIGIN || 'http://localhost:3100');
+  if (originURL.username || originURL.password || originURL.pathname !== '/' || originURL.search || originURL.hash) throw new Error('APP_ORIGIN должен содержать только origin сервера.');
+  const origin = originURL.origin;
   const secure = new URL(origin).protocol === 'https:';
   if (!secure && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(origin).hostname)) throw new Error('Внешний APP_ORIGIN должен использовать HTTPS.');
   const timezone = process.env.COMPANY_TIMEZONE || 'Europe/Moscow';
@@ -179,7 +181,8 @@ export async function createApplication(options = {}) {
         loginRate(`ip:${ip}`, 100); loginRate(`account:${sha(login)}`, 12);
         const user = db.prepare('SELECT * FROM users WHERE login=? COLLATE NOCASE OR email=? COLLATE NOCASE').get(login, login);
         const valid = await verifyPassword(body.password, user?.password || dummy);
-        if (!valid || !user || user.blocked) fail(401, 'Неверный логин или пароль либо доступ закрыт.');
+        const currentUser = user && db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+        if (!valid || !user || !currentUser || currentUser.blocked || currentUser.password !== user.password) fail(401, 'Неверный логин или пароль либо доступ закрыт.');
         db.prepare('DELETE FROM login_attempts WHERE key=?').run(`account:${sha(login)}`);
         db.prepare('DELETE FROM sessions WHERE expires<?').run(Date.now());
         const device = /^[a-f0-9-]{36}$/.test(body.device || '') ? body.device : randomUUID();
