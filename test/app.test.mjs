@@ -9,6 +9,8 @@ import { hashPassword, dayKey, defaults } from '../lib/store.mjs';
 import { parseFile } from '../lib/uploads.mjs';
 import sharp from 'sharp';
 import ExcelJS from 'exceljs';
+import mammoth from 'mammoth';
+import { exportAnswer } from '../lib/exports.mjs';
 
 const password = 'Test-only-password-123';
 async function fixture(t, provider, options = {}) {
@@ -207,4 +209,54 @@ test('Luna HTTP contract sends documents and photos, disables storage, bills usa
   }
   assert.equal(f.app.db.prepare("SELECT COUNT(*) n FROM usage WHERE status='uncertain'").get().n, 1);
   assert.equal(f.app.db.prepare('SELECT COUNT(*) n FROM usage').get().n, 2);
+});
+
+test('office exports contain Cyrillic text and inert spreadsheet cells', async () => {
+  const answer = '# План работы\nПривет, команда & коллеги!\n\n| Задача | Сумма |\n| --- | --- |\n| Закупки | 1200 |\n| =HYPERLINK("https://example.test") | 300 |';
+  const word = await exportAnswer(answer, 'docx');
+  assert.equal(word.buffer.subarray(0, 2).toString(), 'PK');
+  const extracted = await mammoth.extractRawText({ buffer: word.buffer });
+  assert.match(extracted.value, /План работы/); assert.match(extracted.value, /Привет, команда & коллеги!/); assert.match(extracted.value, /Закупки/);
+  const excel = await exportAnswer(answer, 'xlsx');
+  const workbook = new ExcelJS.Workbook(); await workbook.xlsx.load(excel.buffer);
+  assert.equal(workbook.worksheets.length, 2);
+  assert.equal(workbook.getWorksheet('Таблица 1').getCell('A3').value, '=HYPERLINK("https://example.test")');
+  assert.equal(workbook.getWorksheet('Таблица 1').getCell('A3').type, ExcelJS.ValueType.String);
+  assert.equal(workbook.getWorksheet('Ответ').getCell('A1').value, '# План работы');
+  await assert.rejects(exportAnswer('x'.repeat(500001), 'docx'), /слишком большой/);
+});
+
+test('exports require own current result, authentication and a changed password', async t => {
+  const f = await fixture(t), cookie = await f.login('alice'), other = await f.login('bob');
+  const first = (await (await f.call('/api/query', { cookie, body: queryForm('Документ') })).json()).latest;
+  const route = `/api/exports/${first.id}.docx`;
+  assert.equal((await f.call(route)).status, 401);
+  assert.equal((await f.call(route, { cookie: other })).status, 404);
+  const download = await f.call(route, { cookie });
+  assert.equal(download.status, 200); assert.match(download.headers.get('content-disposition'), /attachment/);
+  assert.match((await mammoth.extractRawText({ buffer: Buffer.from(await download.arrayBuffer()) })).value, /Проверенный ответ/);
+  assert.equal((await f.call(`/api/exports/${first.id}.xlsx`, { cookie })).status, 200);
+  assert.equal((await f.call(`/api/exports/${first.id}.exe`, { cookie })).status, 404);
+  f.app.db.prepare('UPDATE users SET must_change=1 WHERE id=?').run(f.ids.alice);
+  assert.equal((await f.call(route, { cookie })).status, 403);
+  f.app.db.prepare('UPDATE users SET must_change=0 WHERE id=?').run(f.ids.alice);
+  await f.call('/api/query', { cookie, body: queryForm('Следующий') });
+  assert.equal((await f.call(route, { cookie })).status, 404);
+});
+
+test('Ranvik base URL uses compatible auth and preserves selected model', async t => {
+  const saved = [process.env.INPUT_USD_PER_MILLION, process.env.OUTPUT_USD_PER_MILLION];
+  process.env.INPUT_USD_PER_MILLION = '1'; process.env.OUTPUT_USD_PER_MILLION = '2';
+  t.after(() => { ['INPUT_USD_PER_MILLION','OUTPUT_USD_PER_MILLION'].forEach((key,i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; }); });
+  let sent = false;
+  const f = await fixture(t, null, { provider: undefined, apiKey: 'test-only', baseURL: 'https://api.ranvik.ru/v1/', providerFetch: async (url, init) => {
+    sent = true; assert.equal(url, 'https://api.ranvik.ru/v1/chat/completions'); assert.equal(init.headers.Authorization, 'Bearer test-only');
+    const request = JSON.parse(init.body); assert.equal(request.model, 'gpt-6-luna'); assert.equal(request.service_tier, undefined);
+    assert.equal(request.max_completion_tokens, defaults.outputTokens);
+    return Response.json({ choices: [{ message: { content: 'Ответ' } }], usage: { prompt_tokens: 100, completion_tokens: 50 } });
+  } });
+  const cookie = await f.login('alice');
+  const response = await f.call('/api/query', { cookie, body: queryForm('Тест') });
+  assert.equal(response.status, 200); assert.ok(sent);
+  assert.equal((await response.json()).usage.usd, 0.0002);
 });

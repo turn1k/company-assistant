@@ -31,7 +31,7 @@ function updateShell() {
   $('#usage-label').textContent = `${number(state.usage.tokens)} / ${number(state.limits.dailyTokens)} токенов`;
   $('#file-limits').textContent = `До ${state.limits.files} файлов · ${state.limits.fileMB} МБ на файл · ${state.limits.totalMB} МБ суммарно`;
   $('#service-banner').hidden = state.configured;
-  $('#service-banner').textContent = 'Интерфейс готов к работе. Для ответов администратору нужно добавить API-ключ OpenAI на сервере.';
+  $('#service-banner').textContent = 'Интерфейс готов к работе. Для ответов администратору нужно добавить API-ключ на сервере.';
   $('#limit-warning').hidden = percent < 80 && state.usage.usd < state.limits.dailyUSD * .8;
   $('#limit-warning').textContent = `Вы приближаетесь к дневному лимиту. Использовано ${number(state.usage.tokens)} токенов; расчётный расход ${money(state.usage.usd)}. Сброс в полночь (${state.timezone}).`;
   $('#last-request').disabled = !state.latest; $('#last-request').textContent = state.latest?.prompt || 'Здесь появится ваш запрос';
@@ -58,6 +58,21 @@ function renderMessages() {
   $('#copy-answer').onclick = async () => { try { await navigator.clipboard.writeText(last.answer); toast('Ответ скопирован'); } catch { toast('Браузер не разрешил копирование. Выделите текст или скачайте файл.'); } };
   $('#download-answer').onclick = () => download(last.answer, 'Ответ.txt');
   $('#download-markdown').onclick = () => download(last.answer, 'Ответ.md', 'text/markdown;charset=utf-8');
+  for (const [format, label] of [['docx', 'Word'], ['xlsx', 'Excel']]) {
+    const button = document.createElement('button'); button.className = 'secondary'; button.textContent = label;
+    button.onclick = async () => {
+      button.disabled = true; button.textContent = 'Готовим файл…';
+      try {
+        const response = await fetch(`/api/exports/${encodeURIComponent(last.id)}.${format}`, { credentials: 'same-origin' });
+        if (!response.ok) { const body = await response.json(); throw new Error(body.error || 'Не удалось создать файл.'); }
+        download(await response.blob(), `Ответ.${format}`, response.headers.get('content-type')); toast('Файл готов. Проверьте загрузки браузера.');
+      } catch (error) { toast(error instanceof TypeError ? 'Нет связи с сервером. Повторите скачивание.' : error.message); }
+      finally { button.disabled = false; button.textContent = label; }
+    };
+    $('.message-actions').append(button);
+  }
+  const print = document.createElement('button'); print.className = 'secondary'; print.textContent = 'Печать / PDF';
+  print.onclick = () => window.print(); $('.message-actions').append(print);
   document.querySelectorAll('[data-artifact]').forEach(b => b.onclick = () => { const f = generated[Number(b.dataset.artifact)]; download(f.text, f.name); });
 }
 async function refreshState(render = false) {
@@ -96,7 +111,7 @@ let sending = false;
 $('#query-form').onsubmit = async event => {
   event.preventDefault(); if (busy || !state) return;
   if (!$('#prompt').value.trim() && !files.length) { $('#prompt').focus(); toast('Введите запрос или прикрепите файл.'); return; }
-  if (!state.configured) { toast('OpenAI ещё не подключён. Обратитесь к администратору.'); return; }
+  if (!state.configured) { toast('Сервис ещё не подключён. Обратитесь к администратору.'); return; }
   const form = new FormData(); form.append('prompt', $('#prompt').value); files.forEach(f => form.append('files', f));
   sending = true; setBusy(true, 'Загружаем и читаем файлы…');
   try {
@@ -149,7 +164,12 @@ function passwordDialog(required = false) {
   };
 }
 $('#profile-button').onclick = () => passwordDialog();
-const mobileAccount = document.createElement('button'); mobileAccount.className = 'text-button'; mobileAccount.textContent = 'Аккаунт'; mobileAccount.onclick = () => passwordDialog(); $('.topbar').append(mobileAccount);
+function accountDialog() {
+  showDialog('Аккаунт', `<p>${esc(state.user.name)}</p><p class="small muted">Сегодня: ${number(state.usage.tokens)} / ${number(state.limits.dailyTokens)} токенов</p><div class="stack"><button class="secondary" id="account-history" ${state.latest ? '' : 'disabled'}>Последний запрос</button><button class="secondary" id="account-password">Сменить пароль</button><button class="text-button" id="account-logout">Выйти из аккаунта</button></div>`);
+  $('#account-history').onclick = () => { $('#form-dialog').close(); $('#last-request').click(); $('#messages').scrollIntoView({ block: 'start' }); };
+  $('#account-password').onclick = () => passwordDialog(); $('#account-logout').onclick = logout;
+}
+const mobileAccount = document.createElement('button'); mobileAccount.className = 'text-button'; mobileAccount.textContent = 'Аккаунт'; mobileAccount.onclick = accountDialog; $('.topbar').append(mobileAccount);
 
 const limitFields = [ ['fileMB', 'Размер файла, МБ', 1, 20], ['totalMB', 'Все вложения, МБ', 1, 50], ['files', 'Файлов в запросе', 1, 5], ['inputTokens', 'Входящих токенов', 1000, 128000], ['outputTokens', 'Токенов в ответе', 256, 32000], ['dailyTokens', 'Токенов в сутки', 1000, 10000000], ['dailyUSD', 'Дневной бюджет, $', .01, 1000] ];
 const limitInputs = values => `<div class="form-grid">${limitFields.map(([key, name, min, max]) => `<label>${name}<input type="number" name="${key}" min="${min}" max="${max}" step="${key === 'dailyUSD' ? '.01' : '1'}" required value="${esc(values[key])}"></label>`).join('')}</div>`;
