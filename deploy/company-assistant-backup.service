@@ -1,0 +1,15 @@
+[Unit]
+Description=Company Assistant verified account and configuration backup
+After=company-assistant.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/company-assistant-backup.py
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/company-assistant
+ReadOnlyPaths=/var/lib/company-assistant
+TimeoutStartSec=300

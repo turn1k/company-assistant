@@ -11,6 +11,7 @@ import sharp from 'sharp';
 import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
 import { exportAnswer } from '../lib/exports.mjs';
+import { budgetStored } from '../public/money.js';
 
 const password = 'Test-only-password-123';
 async function fixture(t, provider, options = {}) {
@@ -36,6 +37,26 @@ async function fixture(t, provider, options = {}) {
   return { app, ids, base, call, login, directory };
 }
 function queryForm(prompt, files = []) { const data = new FormData(); data.append('prompt', prompt); for (const [name, contents, type] of files) data.append('files', new Blob([contents], { type: type || 'text/plain' }), name); return data; }
+
+test('ruble display metadata and converted budgets enforce limits before provider calls', async t => {
+  const env = { DISPLAY_CURRENCY:'RUB', ACCOUNTING_RUB_PER_USD:'84.4283', INPUT_USD_PER_MILLION:String(33.25/84.4283), OUTPUT_USD_PER_MILLION:String(166/84.4283) };
+  const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [key,value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key]=value; } });
+  let calls=0;
+  const f=await fixture(t, async()=>{calls++; return {choices:[{message:{content:'OK'}}],usage:{prompt_tokens:100,completion_tokens:50}};});
+  const cookie=await f.login('alice');
+  const state=await (await f.call('/api/state',{cookie})).json();
+  assert.deepEqual(state.billing,{currency:'RUB',rubPerUSD:84.4283});
+  f.app.db.prepare('UPDATE users SET limits=? WHERE id=?').run(JSON.stringify({dailyUSD:budgetStored(.85,state.billing)}),f.ids.alice);
+  assert.equal((await f.call('/api/query',{cookie,body:queryForm('test')})).status,429);
+  assert.equal(calls,0);
+  f.app.db.prepare('UPDATE users SET limits=? WHERE id=?').run(JSON.stringify({dailyUSD:budgetStored(100,state.billing)}),f.ids.alice);
+  const response=await f.call('/api/query',{cookie,body:queryForm('test')});
+  assert.equal(response.status,200); assert.equal(calls,1);
+  assert.ok(Math.abs((await response.json()).usage.usd*84.4283-.011625)<1e-10);
+  assert.equal((await f.call('/money.js')).status,200);
+});
 
 test('authentication, origin checks, email login and administrator authorization', async t => {
   const f = await fixture(t);

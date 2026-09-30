@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Company Assistant backup at 03:30 Moscow time
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+Unit=company-assistant-backup.service
+
+[Install]
+WantedBy=timers.target

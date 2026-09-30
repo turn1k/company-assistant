@@ -51,6 +51,10 @@ export async function createApplication(options = {}) {
   const outputPrice = Number(process.env.OUTPUT_USD_PER_MILLION || 0.50);
   if (![inputPrice, outputPrice].every(n => Number.isFinite(n) && n > 0)) throw new Error('Некорректная цена токенов.');
   const estimateUSD = (input, output) => (input * inputPrice + output * outputPrice) / 1e6;
+  const currency = process.env.DISPLAY_CURRENCY || 'USD';
+  const rubPerUSD = Number(process.env.ACCOUNTING_RUB_PER_USD || 1);
+  if (!['USD', 'RUB'].includes(currency) || !Number.isFinite(rubPerUSD) || rubPerUSD <= 0 || (currency === 'RUB' && !process.env.ACCOUNTING_RUB_PER_USD)) throw new Error('Для учёта в рублях задайте положительный ACCOUNTING_RUB_PER_USD.');
+  const billing = { currency, rubPerUSD };
   const jobs = new Map();
   const maxConcurrent = Math.max(1, Math.min(100, Number(process.env.MAX_CONCURRENT_REQUESTS || 20)));
   const dummy = await hashPassword(randomBytes(24).toString('hex'));
@@ -100,7 +104,7 @@ export async function createApplication(options = {}) {
   }
   function state(user) {
     const day = dayKey(timezone);
-    return { user: publicUser(user), limits: limitsFor(db, user), usage: usageFor(db, user.id, day), latest: lastFor(user.id), job: jobs.get(user.id) || null, configured: !!apiKey || !!options.provider, timezone, day, model };
+    return { user: publicUser(user), limits: limitsFor(db, user), usage: usageFor(db, user.id, day), latest: lastFor(user.id), job: jobs.get(user.id) || null, configured: !!apiKey || !!options.provider, timezone, day, model, billing };
   }
   async function provider(content, maxTokens) {
     if (options.provider) return options.provider(content, maxTokens);
@@ -283,7 +287,7 @@ export async function createApplication(options = {}) {
         }
         fail(404, 'Не найдено.');
       }
-      const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
+      const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/money.js': ['money.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
       if (!['GET', 'HEAD'].includes(method) || !assets[route]) fail(404, 'Не найдено.');
       const [file, type] = assets[route]; const body = await readFile(path.join(root, 'public', file));
       res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` }); res.end(method === 'HEAD' ? undefined : body);
