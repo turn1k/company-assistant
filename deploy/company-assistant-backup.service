@@ -10,6 +10,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/backups/company-assistant
-ReadOnlyPaths=/var/lib/company-assistant
+# SQLite read-only connections may need to create/rebuild WAL shared memory.
+# The script opens the source database with mode=ro and never modifies rows.
+ReadWritePaths=/var/backups/company-assistant /var/lib/company-assistant
 TimeoutStartSec=300
+
