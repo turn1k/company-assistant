@@ -1,0 +1,13 @@
+[Unit]
+Description=Update local DB-IP City Lite database
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/company-assistant-update-geoip.py
+TimeoutStartSec=600
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/company-assistant-geoip

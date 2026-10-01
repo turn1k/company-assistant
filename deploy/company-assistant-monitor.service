@@ -1,0 +1,16 @@
+[Unit]
+Description=Company Assistant health checks and Telegram alerts
+After=network-online.target
+
+[Service]
+Type=oneshot
+Group=assistant
+EnvironmentFile=-/etc/company-assistant-monitor.env
+ExecStart=/usr/bin/python3 /usr/local/sbin/company-assistant-monitor.py
+UMask=0027
+TimeoutStartSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/company-assistant-monitor

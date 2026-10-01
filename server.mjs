@@ -9,16 +9,12 @@ import { isIP } from 'node:net';
 import { openStore, defaults, hashPassword, verifyPassword, limitsFor, validateLimits, publicUser, sha, dayKey, usageFor } from './lib/store.mjs';
 import { receiveUpload, prepareContent } from './lib/uploads.mjs';
 import { exportAnswer } from './lib/exports.mjs';
+import { deviceLabel, geoLabel } from './lib/client-info.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const fail = (status, message) => { throw new HttpError(status, message); };
 const clean = value => typeof value === 'string' ? value.trim() : '';
-function deviceLabel(agent) {
-  const os = /Windows/.test(agent) ? 'Windows' : /Android/.test(agent) ? 'Android' : /iPhone|iPad/.test(agent) ? 'iOS' : /Macintosh|Mac OS/.test(agent) ? 'macOS' : /Linux/.test(agent) ? 'Linux' : 'Неизвестная ОС';
-  const browser = /CompanyAssistant/.test(agent) ? 'Приложение' : /Edg\//.test(agent) ? 'Edge' : /Firefox\//.test(agent) ? 'Firefox' : /Chrome\//.test(agent) ? 'Chrome' : /Safari\//.test(agent) ? 'Safari' : 'Браузер';
-  return `${os} · ${browser}`;
-}
 async function jsonBody(req) {
   if (!String(req.headers['content-type']).startsWith('application/json')) fail(415, 'Ожидается JSON.');
   let size = 0; const chunks = [];
@@ -59,7 +55,10 @@ export async function createApplication(options = {}) {
   const maxConcurrent = Math.max(1, Math.min(100, Number(process.env.MAX_CONCURRENT_REQUESTS || 20)));
   const dummy = await hashPassword(randomBytes(24).toString('hex'));
   let geo = null;
-  if (process.env.GEOIP_DATABASE) { const maxmind = await import('maxmind'); geo = await maxmind.open(process.env.GEOIP_DATABASE); }
+  if (process.env.GEOIP_DATABASE) {
+    try { const maxmind = await import('maxmind'); geo = await maxmind.open(process.env.GEOIP_DATABASE, { watchForUpdates: true, watchForUpdatesNonPersistent: true }); }
+    catch { console.warn('GeoIP database unavailable; application continues without location lookup.'); }
+  }
   const uploads = path.join(directory, 'uploads');
   await mkdir(uploads, { recursive: true, mode: 0o700 });
   // Reclaim interrupted uploads and replaced results after a crash.
@@ -75,9 +74,7 @@ export async function createApplication(options = {}) {
     return ip.replace(/^::ffff:/, '');
   }
   function location(ip) {
-    if (!geo) return 'GeoIP не подключён';
-    const item = geo.get(ip);
-    return [item?.country?.names?.ru || item?.country?.names?.en, item?.city?.names?.ru || item?.city?.names?.en].filter(Boolean).join(', ') || 'Не определено';
+    return geoLabel(geo, ip);
   }
   const cookieName = secure ? '__Host-company_session' : 'company_session';
   function setCookie(res, token, age = 28800) { res.setHeader('Set-Cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${secure ? '; Secure' : ''}`); }
@@ -246,9 +243,13 @@ export async function createApplication(options = {}) {
           if (user.role !== 'admin') fail(403, 'Доступ только для администратора.');
           if (route === '/api/admin' && method === 'GET') {
             const now = Date.now(), day = dayKey(timezone), month = day.slice(0, 7);
-            const sessions = db.prepare('SELECT s.id,s.user_id,s.created,s.seen,s.expires,s.ip,s.agent,s.location,u.name,u.login FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.expires>? AND u.blocked=0 ORDER BY s.seen DESC').all(now).map(s => ({ ...s, device: deviceLabel(s.agent), online: s.seen > now - 120000, current: s.id === session.id, agent: undefined }));
+            const sessions = db.prepare('SELECT s.id,s.user_id,s.created,s.seen,s.expires,s.ip,s.agent,s.location,u.name,u.login FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.expires>? AND u.blocked=0 ORDER BY s.seen DESC').all(now).map(s => ({ ...s, device: deviceLabel(s.agent), location: location(s.ip), online: s.seen > now - 120000, current: s.id === session.id, agent: undefined }));
             const users = db.prepare('SELECT * FROM users ORDER BY created').all().map(u => ({ ...publicUser(u), effectiveLimits: limitsFor(db, u), today: usageFor(db, u.id, day), month: db.prepare("SELECT COALESCE(SUM(input+output),0) tokens,COALESCE(SUM(usd),0) usd FROM usage WHERE user_id=? AND day LIKE ?").get(u.id, `${month}%`), online: sessions.filter(s => s.user_id === u.id && s.online).length, sessions: sessions.filter(s => s.user_id === u.id).length }));
-            return json(res, 200, { users, sessions, limits: JSON.parse(db.prepare("SELECT value FROM settings WHERE key='limits'").get().value), online: sessions.filter(s => s.online).length, timezone, configured: !!apiKey || !!options.provider, uncertain: db.prepare("SELECT COUNT(*) n FROM usage WHERE status='uncertain'").get().n, prices: { input: inputPrice, output: outputPrice }, model });
+            let monitoring = null;
+            if (process.env.MONITOR_STATUS_FILE) {
+              try { const report = JSON.parse(await readFile(process.env.MONITOR_STATUS_FILE, 'utf8')); monitoring = { checkedAt: report.checkedAt, checks: report.checks, telegramConfigured: report.telegramConfigured, deliveryPending: report.deliveryPending }; } catch { monitoring = { unavailable: true }; }
+            }
+            return json(res, 200, { monitoring, geoIP: { enabled: !!geo, provider: process.env.GEOIP_PROVIDER || null }, users, sessions, limits: JSON.parse(db.prepare("SELECT value FROM settings WHERE key='limits'").get().value), online: sessions.filter(s => s.online).length, timezone, configured: !!apiKey || !!options.provider, uncertain: db.prepare("SELECT COUNT(*) n FROM usage WHERE status='uncertain'").get().n, prices: { input: inputPrice, output: outputPrice }, model });
           }
           if (route === '/api/admin/users' && method === 'POST') {
             const body = await jsonBody(req);

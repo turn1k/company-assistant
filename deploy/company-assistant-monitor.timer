@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Company Assistant every minute
+
+[Timer]
+OnBootSec=90
+OnUnitInactiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

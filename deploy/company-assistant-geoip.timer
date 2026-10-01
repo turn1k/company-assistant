@@ -1,0 +1,10 @@
+[Unit]
+Description=Check monthly GeoIP database release daily
+
+[Timer]
+OnCalendar=*-*-* 01:15:00 UTC
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

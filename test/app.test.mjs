@@ -70,6 +70,19 @@ test('authentication, origin checks, email login and administrator authorization
   assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
 });
 
+test('monitoring summary is admin-only and excludes notification secrets', async t => {
+  const old=process.env.MONITOR_STATUS_FILE;
+  t.after(()=>{if(old===undefined)delete process.env.MONITOR_STATUS_FILE;else process.env.MONITOR_STATUS_FILE=old;});
+  const f=await fixture(t);
+  process.env.MONITOR_STATUS_FILE=path.join(f.directory,'monitor.json');
+  await writeFile(process.env.MONITOR_STATUS_FILE,JSON.stringify({checkedAt:Date.now(),checks:{app:true},telegramConfigured:true,deliveryPending:false,token:'must-not-leak',chat_id:'private'}));
+  const admin=await f.login('admin'),alice=await f.login('alice');
+  assert.equal((await f.call('/api/admin',{cookie:alice})).status,403);
+  const response=await f.call('/api/admin',{cookie:admin}),text=await response.text();
+  assert.equal(JSON.parse(text).monitoring.checks.app,true);
+  assert.ok(!text.includes('must-not-leak'));assert.ok(!text.includes('chat_id'));
+});
+
 test('successful results replace previous files; accounts cannot read each other’s files', async t => {
   const f = await fixture(t), alice = await f.login('alice'), bob = await f.login('bob');
   const firstResponse = await f.call('/api/query', { cookie: alice, body: queryForm('Прочитай', [['one.txt', 'First document']]) });
