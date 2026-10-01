@@ -6,7 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createApplication } from '../server.mjs';
 import { hashPassword, dayKey, defaults } from '../lib/store.mjs';
-import { parseFile } from '../lib/uploads.mjs';
+import { parseFile, prepareContent } from '../lib/uploads.mjs';
 import sharp from 'sharp';
 import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
@@ -285,7 +285,7 @@ test('Ranvik base URL uses compatible auth and preserves selected model', async 
   let sent = false;
   const f = await fixture(t, null, { provider: undefined, apiKey: 'test-only', baseURL: 'https://api.ranvik.ru/v1/', providerFetch: async (url, init) => {
     sent = true; assert.equal(url, 'https://api.ranvik.ru/v1/chat/completions'); assert.equal(init.headers.Authorization, 'Bearer test-only');
-    const request = JSON.parse(init.body); assert.equal(request.model, 'gpt-6-luna'); assert.equal(request.service_tier, undefined);
+    const request = JSON.parse(init.body); assert.equal(request.model, 'gpt-6-luna'); assert.equal(request.service_tier, undefined); assert.equal(request.reasoning_effort, 'none'); assert.equal(request.store, false);
     assert.equal(request.max_completion_tokens, defaults.outputTokens);
     return Response.json({ choices: [{ message: { content: 'Ответ' } }], usage: { prompt_tokens: 100, completion_tokens: 50 } });
   } });
@@ -293,4 +293,34 @@ test('Ranvik base URL uses compatible auth and preserves selected model', async 
   const response = await f.call('/api/query', { cookie, body: queryForm('Тест') });
   assert.equal(response.status, 200); assert.ok(sent);
   assert.equal((await response.json()).usage.usd, 0.0002);
+});
+
+
+test('scanned PDF pages render as images in order and respect request limits', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pdf-scan-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const drawing = 'q 100 0 0 100 20 20 cm /Im1 Do Q';
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 7 >>\nstream\nFF0000>\nendstream',
+    '<< /Length '+drawing.length+' >>\nstream\n'+drawing+'\nendstream',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 7 0 R >> >> /Contents 8 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Length 39 >>\nstream\nBT /F1 12 Tf 20 100 Td (Page two) Tj ET\nendstream'];
+  let pdf = '%PDF-1.4\n'; const offsets = [0];
+  objects.forEach((obj, i) => { offsets.push(Buffer.byteLength(pdf)); pdf += (i+1)+' 0 obj\n'+obj+'\nendobj\n'; });
+  const xref=Buffer.byteLength(pdf);
+  pdf += 'xref\n0 9\n0000000000 65535 f \n'+offsets.slice(1).map(n=>String(n).padStart(10,'0')+' 00000 n \n').join('')+'trailer\n<< /Size 9 /Root 1 0 R >>\nstartxref\n'+xref+'\n%%EOF';
+  const file = { path: path.join(directory, 'scan.pdf'), name: 'scan.pdf', ext: '.pdf' };
+  await writeFile(file.path, pdf);
+  const parsed = await parseFile(file, 32000);
+  assert.deepEqual(parsed.parts.map(p=>p.type), ['text','image_url','text']);
+  assert.match(parsed.parts[2].text, /Page two/);
+  const image=Buffer.from(parsed.parts[1].image_url.url.split(',')[1], 'base64');
+  const pixel=await sharp(image).extract({left:50,top:250,width:1,height:1}).raw().toBuffer();
+  assert.ok(pixel[0] > 200 && pixel[1] < 50, 'scan image retains its red pixels');
+  const prepared=await prepareContent('Read all pages', [file], 32000);
+  assert.equal(prepared.content.filter(p=>p.type==='image_url').length,1);
+  assert.ok(prepared.upperBound>8192);
+  await assert.rejects(prepareContent('Read', [file], 8000), /лимит/);
 });

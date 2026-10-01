@@ -4,7 +4,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 const number = n => Number(n || 0).toLocaleString('ru-RU');
 const money = n => formatMoney(n, state?.billing);
 const date = n => new Date(n).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-let state = null, files = [], busy = false, view = 'chat', adminTab = 'users', adminData = null, stream = null, photo = null, photoURL = null, toastTimer;
+let state = null, files = [], busy = false, view = 'chat', adminTab = 'users', adminData = null, toastTimer;
 let device;
 try { device = localStorage.getItem('company-device') || crypto.randomUUID(); localStorage.setItem('company-device', device); } catch { device = crypto.randomUUID(); }
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 6500); }
@@ -16,7 +16,7 @@ async function api(url, options = {}) {
     return body;
   } catch (error) { if (error instanceof TypeError) throw new Error('Нет связи с сервером. Проверьте подключение к интернету.'); throw error; }
 }
-function signOutView() { state = null; files = []; busy = false; closeCamera(); $('#workspace').hidden = true; $('#login-screen').hidden = false; $('#messages').replaceChildren(); $('#prompt').value = ''; if ($('#form-dialog').open) $('#form-dialog').close(); }
+function signOutView() { state = null; files = []; busy = false; $('#workspace').hidden = true; $('#login-screen').hidden = false; $('#messages').replaceChildren(); $('#prompt').value = ''; if ($('#form-dialog').open) $('#form-dialog').close(); }
 function setBusy(value, label) {
   busy = value; $('#send-button').disabled = value; $('#processing').hidden = !value;
   $('#processing-label').textContent = label || 'Готовим ответ…';
@@ -123,34 +123,6 @@ $('#query-form').onsubmit = async event => {
   finally { sending = false; setBusy(false); if (state) await refreshState().catch(() => {}); }
 };
 $('#prompt').onkeydown = event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); $('#query-form').requestSubmit(); } };
-
-function stopStream() { stream?.getTracks().forEach(track => track.stop()); stream = null; $('#camera-video').srcObject = null; }
-function closeCamera() { stopStream(); if (photoURL) URL.revokeObjectURL(photoURL); photoURL = null; photo = null; if ($('#camera-dialog').open) $('#camera-dialog').close(); }
-async function startCamera() {
-  stopStream(); $('#camera-error').textContent = ''; $('#camera-video').hidden = false; $('#camera-preview').hidden = true; $('#take-photo').hidden = false; $('#take-photo').disabled = true; $('#use-photo').hidden = true; $('#retake-photo').hidden = true;
-  try {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('unsupported');
-    const acquired = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false });
-    if (!$('#camera-dialog').open) { acquired.getTracks().forEach(t => t.stop()); return; }
-    stream = acquired; $('#camera-video').srcObject = stream; await $('#camera-video').play(); $('#take-photo').disabled = false;
-  } catch (error) {
-    stopStream(); $('#camera-error').textContent = error.name === 'NotAllowedError' ? 'Доступ к камере запрещён. Разрешите его в настройках браузера или прикрепите готовое фото.' : error.name === 'NotFoundError' ? 'Камера не найдена. Прикрепите фото с устройства.' : 'Камера недоступна. Для съёмки нужен HTTPS и разрешение на камеру. Можно прикрепить готовое фото.';
-  }
-}
-$('#camera-button').onclick = () => { $('#camera-dialog').showModal(); startCamera(); };
-$('#close-camera').onclick = closeCamera; $('#camera-dialog').addEventListener('cancel', closeCamera); $('#camera-dialog').addEventListener('close', stopStream);
-$('#take-photo').onclick = () => {
-  const video = $('#camera-video'); if (!video.videoWidth) { toast('Камера ещё запускается.'); return; }
-  const canvas = document.createElement('canvas'); canvas.width = video.videoWidth; canvas.height = video.videoHeight; canvas.getContext('2d').drawImage(video, 0, 0);
-  canvas.toBlob(blob => {
-    if (!blob || !$('#camera-dialog').open) return;
-    photo = new File([blob], `Фото-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`, { type: 'image/jpeg' });
-    if (photoURL) URL.revokeObjectURL(photoURL); photoURL = URL.createObjectURL(blob); $('#camera-preview').src = photoURL;
-    $('#camera-preview').hidden = false; video.hidden = true; $('#take-photo').hidden = true; $('#use-photo').hidden = false; $('#retake-photo').hidden = false; stopStream();
-  }, 'image/jpeg', .92);
-};
-$('#retake-photo').onclick = startCamera; $('#use-photo').onclick = () => { if (photo) addFiles([photo]); closeCamera(); };
-window.addEventListener('pagehide', stopStream);
 
 function showDialog(title, content) { $('#dialog-title').textContent = title; $('#dialog-content').innerHTML = content; $('#close-dialog').hidden = false; if (!$('#form-dialog').open) $('#form-dialog').showModal(); }
 $('#close-dialog').onclick = () => $('#form-dialog').close();
