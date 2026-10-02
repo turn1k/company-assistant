@@ -324,3 +324,48 @@ test('scanned PDF pages render as images in order and respect request limits', a
   assert.ok(prepared.upperBound>8192);
   await assert.rejects(prepareContent('Read', [file], 8000), /лимит/);
 });
+
+
+test('20 employees run concurrently, overload is rejected and results remain isolated', { timeout: 20000 }, async t => {
+  let active = 0, peak = 0, entered = 0, release, ready;
+  const gate = new Promise(resolve => { release = resolve; });
+  const allEntered = new Promise(resolve => { ready = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async content => {
+    active++; entered++; peak = Math.max(peak, active);
+    if (entered === 20) ready();
+    await gate;
+    active--;
+    return { choices: [{ message: { content: content[0].text }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } };
+  });
+  const hash = f.app.db.prepare('SELECT password FROM users WHERE login=?').get('alice').password;
+  const cookies = [];
+  for (let i=0; i<20; i++) {
+    const login='load-'+i;
+    f.app.db.prepare('INSERT INTO users(id,login,name,password,role,must_change,created) VALUES (?,?,?,?,?,0,?)').run(randomUUID(),login,login,hash,'user',Date.now());
+    cookies.push(await f.login(login));
+  }
+  const extra = await f.login('bob');
+  const start = performance.now();
+  const requests = cookies.map((cookie,i) => f.call('/api/query', { cookie, body: queryForm('Private answer '+i, i%4===0 ? [['note.txt','Sample document '+i]] : []) }));
+  const timeout = setTimeout(() => ready(), 8000);
+  await allEntered; clearTimeout(timeout);
+  assert.equal(entered,20);
+  assert.equal(peak,20);
+  const healthStart=performance.now();
+  assert.equal((await f.call('/health')).status,200);
+  const healthMs=Math.round(performance.now()-healthStart);
+  assert.equal((await f.call('/api/query', { cookie: cookies[0], body: queryForm('duplicate') })).status,409);
+  assert.equal((await f.call('/api/query', { cookie: extra, body: queryForm('overload') })).status,503);
+  release();
+  const responses = await Promise.all(requests);
+  for(let i=0;i<responses.length;i++) {
+    assert.equal(responses[i].status,200);
+    assert.equal((await responses[i].json()).latest.answer,'Private answer '+i);
+    const state=await (await f.call('/api/state',{cookie:cookies[i]})).json();
+    assert.equal(state.latest.answer,'Private answer '+i);
+    assert.equal(state.usage.tokens,150);
+  }
+  assert.equal((await f.call('/api/query',{cookie:extra,body:queryForm('After capacity frees')})).status,200);
+  t.diagnostic('20 concurrent mock-model requests: '+Math.round(performance.now()-start)+' ms; health while busy: '+healthMs+' ms. This does not measure Ranvik throughput.');
+});

@@ -20,3 +20,4 @@ jobs:
       - run: pnpm test
       - run: node --check public/app.js
       - run: node --check desktop/main.cjs
+      - run: python3 -m unittest discover -s deploy -p "test_*.py"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Root-only account/config backups. Never archives chat content or sessions."""
+from contextlib import closing
 import argparse
 import datetime
 import io
@@ -26,7 +27,7 @@ def verify(archive):
         with tar.extractfile(member) as source, restored.open('wb') as dest:
             while chunk := source.read(1024 * 1024):
                 dest.write(chunk)
-        with sqlite3.connect(restored) as db:
+        with closing(sqlite3.connect(restored)) as db:
             if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                 raise RuntimeError('Database integrity failed')
             if db.execute('PRAGMA foreign_key_check').fetchall():
@@ -47,7 +48,7 @@ def backup():
     with tempfile.TemporaryDirectory(prefix='snapshot-', dir=ROOT) as tmp:
         snapshot = Path(tmp) / 'app.sqlite'
         # Online SQLite backup captures a consistent transaction, including WAL.
-        with sqlite3.connect(f'file:{DATA}?mode=ro', uri=True) as source, sqlite3.connect(snapshot) as dest:
+        with closing(sqlite3.connect(f'file:{DATA}?mode=ro', uri=True)) as source, closing(sqlite3.connect(snapshot)) as dest:
             source.backup(dest)
             dest.execute('PRAGMA secure_delete=ON')
             for table in ('latest', 'sessions', 'login_attempts'):

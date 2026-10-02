@@ -33,7 +33,7 @@ function openWorkspace(origin) {
     callback(true);
   });
   window = new BrowserWindow({ width: 1320, height: 880, minWidth: 760, minHeight: 600, title: 'Company Assistant', backgroundColor: '#f7f8fc', webPreferences: { partition: 'persist:company', nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false } });
-  window.webContents.setUserAgent(window.webContents.getUserAgent() + ' CompanyAssistant/0.1.0');
+  window.webContents.setUserAgent(window.webContents.getUserAgent() + ` CompanyAssistant/${app.getVersion()}`);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => { if (!sameOrigin(url)) event.preventDefault(); });
   window.webContents.on('will-redirect', (event, url) => { if (!sameOrigin(url)) event.preventDefault(); });

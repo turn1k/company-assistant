@@ -1,5 +1,10 @@
 name: Desktop installers
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +21,7 @@ jobs:
             target: --mac --arm64 --x64
             label: macos
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: desktop
@@ -38,4 +44,5 @@ jobs:
             desktop/dist/*.exe
             desktop/dist/*.dmg
             desktop/dist/*.zip
-          retention-days: 14
+          retention-days: 30
+          if-no-files-found: error

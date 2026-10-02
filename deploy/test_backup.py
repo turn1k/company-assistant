@@ -18,7 +18,7 @@ class BackupTest(unittest.TestCase):
             root=Path(tmp); destination=root/'backups'; destination.mkdir()
             database=root/'source.sqlite'; config=root/'config'; config.write_text('TEST_CONFIG=1')
             marker='PRIVATE_CHAT_MUST_NOT_SURVIVE_12345'
-            with sqlite3.connect(database) as db:
+            with contextlib.closing(sqlite3.connect(database)) as db:
                 db.executescript('CREATE TABLE users(id TEXT); CREATE TABLE latest(answer TEXT); CREATE TABLE sessions(token TEXT); CREATE TABLE login_attempts(key TEXT);')
                 db.execute('INSERT INTO users VALUES (?)', ('user',))
                 db.execute('INSERT INTO latest VALUES (?)', (marker,))
@@ -32,7 +32,7 @@ class BackupTest(unittest.TestCase):
                     self.assertEqual(backup.verify(archive),1)
                     with tarfile.open(archive) as tar:
                         self.assertNotIn(marker.encode(),tar.extractfile('data/app.sqlite').read())
-                with sqlite3.connect(database) as db:
+                with contextlib.closing(sqlite3.connect(database)) as db:
                     self.assertEqual(db.execute('SELECT answer FROM latest').fetchone()[0],marker)
                 config.unlink()
                 with self.assertRaises(FileNotFoundError): backup.backup()
