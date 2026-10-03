@@ -76,8 +76,8 @@ function renderMessages() {
   print.onclick = () => window.print(); $('.message-actions').append(print);
   document.querySelectorAll('[data-artifact]').forEach(b => b.onclick = () => { const f = generated[Number(b.dataset.artifact)]; download(f.text, f.name); });
 }
-async function refreshState(render = false) {
-  const next = await api('/api/state'); const changed = state?.latest?.id !== next.latest?.id;
+async function refreshState(render = false, options = {}) {
+  const next = await api('/api/state', options); const changed = state?.latest?.id !== next.latest?.id;
   state = next; updateShell(); if (render || changed) renderMessages(); if (state.job) setBusy(true, state.job.phase); else if (!sending) setBusy(false);
 }
 $('#login-form').onsubmit = async event => {
@@ -206,4 +206,7 @@ setInterval(async () => {
   catch (error) { toast(error.message); }
 }, 30000);
 setInterval(() => { if (state && busy) api('/api/state').then(next => { if (next.job) $('#processing-label').textContent = next.job.phase; else if (!sending) refreshState(true).catch(() => {}); }).catch(() => {}); }, 5000);
-refreshState(true).catch(error => { if (!/Войдите|Сеанс/.test(error.message)) $('#login-error').textContent = error.message; });
+refreshState(true, { signal: AbortSignal.timeout(15000) }).catch(error => {
+  signOutView();
+  if (!/Войдите|Сеанс/.test(error.message)) $('#login-error').textContent = error.name === 'TimeoutError' ? 'Сервер не ответил. Попробуйте войти ещё раз.' : error.message;
+}).finally(() => { $('#session-loading').hidden = true; });

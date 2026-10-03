@@ -25,3 +25,5 @@
 }
 
 .login-form-wrap{min-width:0}.login-form input{min-width:0;max-width:100%}.login-form p{overflow-wrap:anywhere}
+
+.session-loading{min-height:100dvh;display:flex;align-items:center;justify-content:center}.session-loading .spinner{width:28px;height:28px}
