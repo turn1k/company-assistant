@@ -82,7 +82,7 @@ async function refreshState(render = false, options = {}) {
 }
 $('#login-form').onsubmit = async event => {
   event.preventDefault(); const form = event.currentTarget, button = form.querySelector('button'); button.disabled = true; $('#login-error').textContent = '';
-  try { state = await api('/api/login', { method: 'POST', body: JSON.stringify({ login: form.login.value, password: form.password.value, device }) }); form.password.value = ''; updateShell(); renderMessages(); showView('chat'); if (state.job) setBusy(true, state.job.phase); }
+  try { state = await api('/api/login', { method: 'POST', body: JSON.stringify({ login: form.login.value, password: form.password.value, remember: form.remember.checked, device }) }); form.password.value = ''; updateShell(); renderMessages(); showView('chat'); if (state.job) setBusy(true, state.job.phase); }
   catch (error) { $('#login-error').textContent = error.message; } finally { button.disabled = false; }
 };
 async function logout() { try { await api('/api/logout', { method: 'POST' }); signOutView(); } catch (error) { toast(error.message); } }

@@ -199,8 +199,9 @@ export async function createApplication(options = {}) {
         const device = /^[a-f0-9-]{36}$/.test(body.device || '') ? body.device : randomUUID();
         db.prepare('DELETE FROM sessions WHERE user_id=? AND device=?').run(user.id, device);
         const token = randomBytes(32).toString('hex');
-        db.prepare('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)').run(randomUUID(), sha(token), user.id, Date.now(), Date.now(), Date.now() + 28800000, ip, String(req.headers['user-agent'] || '').slice(0, 512), device, location(ip));
-        setCookie(res, token); audit(user.id, 'login', user.id);
+        const sessionAge = body.remember === true ? 30 * 86400 : 28800;
+        db.prepare('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)').run(randomUUID(), sha(token), user.id, Date.now(), Date.now(), Date.now() + sessionAge * 1000, ip, String(req.headers['user-agent'] || '').slice(0, 512), device, location(ip));
+        setCookie(res, token, sessionAge); audit(user.id, 'login', user.id);
         return json(res, 200, state(user));
       }
       if (route.startsWith('/api/')) {
@@ -213,7 +214,7 @@ export async function createApplication(options = {}) {
           const password = await hashPassword(body.password);
           db.prepare('UPDATE users SET password=?,must_change=0 WHERE id=?').run(password, user.id);
           db.prepare('DELETE FROM sessions WHERE user_id=? AND id<>?').run(user.id, session.id);
-          const token = randomBytes(32).toString('hex'); db.prepare('UPDATE sessions SET token=? WHERE id=?').run(sha(token), session.id); setCookie(res, token);
+          const token = randomBytes(32).toString('hex'); db.prepare('UPDATE sessions SET token=? WHERE id=?').run(sha(token), session.id); setCookie(res, token, Math.max(1, Math.floor((session.expires - Date.now()) / 1000)));
           audit(user.id, 'password_changed', user.id); return json(res, 200, { ok: true });
         }
         if (route === '/api/state' && method === 'GET') return json(res, 200, state(user));
@@ -289,7 +290,7 @@ export async function createApplication(options = {}) {
         }
         fail(404, 'Не найдено.');
       }
-      const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/money.js': ['money.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
+      const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/money.js': ['money.js', 'text/javascript'], '/theme.js': ['theme.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
       if (!['GET', 'HEAD'].includes(method) || !assets[route]) fail(404, 'Не найдено.');
       const [file, type] = assets[route]; const body = await readFile(path.join(root, 'public', file));
       res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` }); res.end(method === 'HEAD' ? undefined : body);
