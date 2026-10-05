@@ -5,6 +5,8 @@ const number = n => Number(n || 0).toLocaleString('ru-RU');
 const money = n => formatMoney(n, state?.billing);
 const date = n => new Date(n).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 let state = null, files = [], busy = false, view = 'chat', adminTab = 'users', adminData = null, toastTimer;
+let activeChatId;
+const drafts = new Map();
 let device;
 try { device = localStorage.getItem('company-device') || crypto.randomUUID(); localStorage.setItem('company-device', device); } catch { device = crypto.randomUUID(); }
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 6500); }
@@ -16,14 +18,17 @@ async function api(url, options = {}) {
     return body;
   } catch (error) { if (error instanceof TypeError) throw new Error('Нет связи с сервером. Проверьте подключение к интернету.'); throw error; }
 }
-function signOutView() { state = null; files = []; busy = false; $('#workspace').hidden = true; $('#login-screen').hidden = false; $('#messages').replaceChildren(); $('#prompt').value = ''; if ($('#form-dialog').open) $('#form-dialog').close(); }
+function signOutView() { state = null; files = []; busy = false; activeChatId = undefined; drafts.clear(); $('#workspace').hidden = true; $('#login-screen').hidden = false; $('#messages').replaceChildren(); $('#prompt').value = ''; if ($('#form-dialog').open) $('#form-dialog').close(); }
 function setBusy(value, label) {
   busy = value; $('#send-button').disabled = value; $('#processing').hidden = !value;
+  $('#new-chat').disabled = value;
   $('#processing-label').textContent = label || 'Готовим ответ…';
   $('#send-button').innerHTML = value ? 'Обработка…' : 'Отправить <span aria-hidden="true">↑</span>';
 }
 function updateShell() {
   if (!state) return;
+  if (activeChatId === undefined) activeChatId = state.latest?.chatId || null;
+  if (activeChatId && !state.chats?.some(chat => chat.id === activeChatId)) activeChatId = null;
   $('#login-screen').hidden = true; $('#workspace').hidden = false;
   $('#user-name').textContent = state.user.name; $('#user-role').textContent = state.user.role === 'admin' ? 'Администратор' : 'Сотрудник'; $('#avatar').textContent = state.user.name[0].toUpperCase();
   $('#nav-admin').hidden = state.user.role !== 'admin';
@@ -35,8 +40,9 @@ function updateShell() {
   $('#service-banner').textContent = 'Интерфейс готов к работе. Для ответов администратору нужно добавить API-ключ на сервере.';
   $('#limit-warning').hidden = percent < 80 && state.usage.usd < state.limits.dailyUSD * .8;
   $('#limit-warning').textContent = `Вы приближаетесь к дневному лимиту. Использовано ${number(state.usage.tokens)} токенов; расчётный расход ${money(state.usage.usd)}. Сброс в полночь (${state.timezone}).`;
-  $('#history-list').innerHTML = (state.history || []).map(row => `<button class="last-request" data-history="${esc(row.id)}">${esc(row.prompt || 'Запрос с файлом')}</button>`).join('');
-  $('#history-list').querySelectorAll('[data-history]').forEach(button => button.onclick = () => scrollToRequest(button.dataset.history));
+  $('#history-list').innerHTML = (state.chats || []).map(chat => `<button class="last-request${chat.id === activeChatId ? ' active' : ''}" data-chat="${esc(chat.id)}" aria-pressed="${chat.id === activeChatId}" title="${esc(chat.title)}">${esc(chat.title)}</button>`).join('');
+  $('#history-list').querySelectorAll('[data-chat]').forEach(button => button.onclick = () => openChat(button.dataset.chat));
+  if (view === 'chat') $('#page-title').textContent = state.chats?.find(chat => chat.id === activeChatId)?.title || 'Новый чат';
   if (state.user.mustChange && !$('#form-dialog').open) passwordDialog(true);
 }
 function download(content, filename, type = 'text/plain;charset=utf-8') {
@@ -53,7 +59,7 @@ function artifacts(answer) {
   return result;
 }
 function renderMessages() {
-  const history = state?.history || (state?.latest ? [state.latest] : []);
+  const history = (state?.history || []).filter(row => row.chatId === activeChatId);
   $('#empty-chat').hidden = history.length > 0;
   const container = $('#messages'); container.replaceChildren();
   for (const last of [...history].reverse()) {
@@ -95,9 +101,19 @@ $('#login-form').onsubmit = async event => {
 };
 async function logout() { try { await api('/api/logout', { method: 'POST' }); signOutView(); } catch (error) { toast(error.message); } }
 $('#logout').onclick = logout;
-function showView(next) { view = next; $('#chat-view').hidden = view !== 'chat'; $('#admin-view').hidden = view !== 'admin'; $('#nav-chat').classList.toggle('active', view === 'chat'); $('#nav-admin').classList.toggle('active', view === 'admin'); $('#page-title').textContent = view === 'chat' ? 'Ваш рабочий помощник' : 'Управление пространством'; if (view === 'admin') loadAdmin(); }
+function showView(next) { view = next; $('#chat-view').hidden = view !== 'chat'; $('#admin-view').hidden = view !== 'admin'; $('#nav-chat').classList.toggle('active', view === 'chat'); $('#nav-admin').classList.toggle('active', view === 'admin'); $('#page-title').textContent = view === 'chat' ? (state?.chats?.find(chat => chat.id === activeChatId)?.title || 'Новый чат') : 'Управление пространством'; if (view === 'admin') loadAdmin(); }
 $('#nav-chat').onclick = () => showView('chat'); $('#nav-admin').onclick = () => showView('admin');
-function scrollToRequest(id) { showView('chat'); document.getElementById(`request-${id}`)?.scrollIntoView({ block: 'start' }); }
+function openChat(id) {
+  if (busy) { toast('Дождитесь ответа перед переключением чата.'); return; }
+  if (id && !state.chats.some(chat => chat.id === id)) return;
+  drafts.set(activeChatId || 'new', { prompt: $('#prompt').value, files: [...files] });
+  activeChatId = id;
+  const draft = drafts.get(id || 'new');
+  $('#prompt').value = draft?.prompt || ''; files = [...(draft?.files || [])];
+  showView('chat'); updateShell(); renderFiles(); renderMessages();
+  if (!id) $('#prompt').focus();
+}
+$('#new-chat').onclick = () => openChat(null);
 document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => { $('#prompt').value = button.dataset.prompt; $('#prompt').focus(); });
 function renderFiles() {
   $('#attachments').innerHTML = files.map((file, i) => `<div class="file-chip"><span>${esc(file.name)}</span><button type="button" data-remove="${i}" aria-label="Убрать ${esc(file.name)}">×</button></div>`).join('');
@@ -121,11 +137,13 @@ $('#query-form').onsubmit = async event => {
   event.preventDefault(); if (busy || !state) return;
   if (!$('#prompt').value.trim() && !files.length) { $('#prompt').focus(); toast('Введите запрос или прикрепите файл.'); return; }
   if (!state.configured) { toast('Сервис ещё не подключён. Обратитесь к администратору.'); return; }
-  const form = new FormData(); form.append('prompt', $('#prompt').value); files.forEach(f => form.append('files', f));
+  const submittedChat = activeChatId;
+  const form = new FormData(); form.append('prompt', $('#prompt').value); form.append('chatId', activeChatId || 'new'); files.forEach(f => form.append('files', f));
   sending = true; setBusy(true, 'Загружаем и читаем файлы…');
   try {
     const result = await api('/api/query', { method: 'POST', body: form });
-    state.latest = result.latest; state.history = result.history; state.usage = result.usage; $('#prompt').value = ''; files = []; renderFiles(); renderMessages(); updateShell();
+    drafts.delete(submittedChat || 'new'); activeChatId = result.latest.chatId;
+    state.latest = result.latest; state.history = result.history; state.chats = result.chats; state.usage = result.usage; $('#prompt').value = ''; files = []; renderFiles(); renderMessages(); updateShell();
     if (result.context?.omittedAttachments) toast('Часть прежних вложений не вошла в контекст. При необходимости прикрепите их заново.');
     $('#conversation').scrollTop = $('#conversation').scrollHeight;
   } catch (error) { toast(error.message); }
@@ -152,10 +170,10 @@ function passwordDialog(required = false) {
 $('#profile-button').onclick = () => passwordDialog();
 function accountDialog() {
   showDialog('Аккаунт', `<p>${esc(state.user.name)}</p><p class="small muted">Сегодня: ${number(state.usage.tokens)} / ${number(state.limits.dailyTokens)} токенов</p><div class="stack"><button class="secondary" id="account-history" ${state.latest ? '' : 'disabled'}>Последний запрос</button><button class="secondary" id="account-password">Сменить пароль</button><button class="text-button" id="account-logout">Выйти из аккаунта</button></div>`);
-  $('#account-history').textContent = 'История запросов';
+  $('#account-history').textContent = 'История чатов';
   $('#account-history').onclick = () => {
-    showDialog('История запросов', `<div class="stack">${(state.history || []).map(row => `<button class="secondary" data-jump="${esc(row.id)}">${esc((row.prompt || 'Запрос с файлом').slice(0, 100))} · ${esc(date(row.created))}</button>`).join('')}</div>`);
-    document.querySelectorAll('[data-jump]').forEach(button => button.onclick = () => { $('#form-dialog').close(); scrollToRequest(button.dataset.jump); });
+    showDialog('История чатов', `<div class="stack">${(state.chats || []).map(chat => `<button class="secondary" data-open-chat="${esc(chat.id)}">${esc(chat.title)} · ${esc(date(chat.updated))}</button>`).join('')}</div>`);
+    document.querySelectorAll('[data-open-chat]').forEach(button => button.onclick = () => { $('#form-dialog').close(); openChat(button.dataset.openChat); });
   };
   $('#account-password').onclick = () => passwordDialog(); $('#account-logout').onclick = logout;
 }

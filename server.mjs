@@ -71,11 +71,11 @@ export async function createApplication(options = {}) {
   function cleanupHistory(now = Date.now()) {
     if (cleanupRunning) return cleanupRunning;
     cleanupRunning = (async () => {
-      const idle = db.prepare('SELECT user_id FROM latest GROUP BY user_id HAVING MAX(created)<=?').all(now - ATTACHMENT_IDLE_MS);
-      for (const { user_id } of idle) {
+      const idle = db.prepare('SELECT user_id,chat_id FROM latest GROUP BY user_id,chat_id HAVING MAX(created)<=?').all(now - ATTACHMENT_IDLE_MS);
+      for (const { user_id, chat_id } of idle) {
         if (jobs.has(user_id)) continue;
-        if (db.prepare('SELECT MAX(created) created FROM latest WHERE user_id=?').get(user_id).created > now - ATTACHMENT_IDLE_MS) continue;
-        const rows = db.prepare('SELECT id,files FROM latest WHERE user_id=?').all(user_id);
+        if (db.prepare('SELECT MAX(created) created FROM latest WHERE user_id=? AND chat_id IS ?').get(user_id, chat_id).created > now - ATTACHMENT_IDLE_MS) continue;
+        const rows = db.prepare('SELECT id,files FROM latest WHERE user_id=? AND chat_id IS ?').all(user_id, chat_id);
         // Remove heavy data from API access before asynchronous disk cleanup.
         for (const row of rows) db.prepare('UPDATE latest SET context=NULL,files=? WHERE id=?').run(JSON.stringify(JSON.parse(row.files).map(f => ({ ...f, expired: true }))), row.id);
         for (const row of rows) await rm(path.join(uploads, row.id), { recursive: true, force: true });
@@ -118,13 +118,18 @@ export async function createApplication(options = {}) {
     db.prepare('INSERT INTO login_attempts VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1').run(key, now + 15 * 60000);
   }
   function historyFor(userId) {
-    return db.prepare('SELECT id,prompt,answer,files,created FROM latest WHERE user_id=? ORDER BY created DESC,rowid DESC LIMIT ?').all(userId, HISTORY_LIMIT)
+    return db.prepare('SELECT id,prompt,answer,files,created,chat_id AS chatId,chat_title AS chatTitle FROM latest WHERE user_id=? ORDER BY created DESC,rowid DESC LIMIT ?').all(userId, HISTORY_LIMIT)
       .map(row => ({ ...row, files: JSON.parse(row.files).map(({ id, name, size, expired }) => ({ id, name, size, expired: !!expired })) }));
   }
   function lastFor(userId) { return historyFor(userId)[0] || null; }
+  function chatsFor(userId) {
+    const chats = new Map();
+    for (const row of historyFor(userId)) if (!chats.has(row.chatId)) chats.set(row.chatId, { id: row.chatId, title: row.chatTitle, updated: row.created });
+    return [...chats.values()];
+  }
   function state(user) {
     const day = dayKey(timezone);
-    return { user: publicUser(user), limits: limitsFor(db, user), usage: usageFor(db, user.id, day), latest: lastFor(user.id), history: historyFor(user.id), job: jobs.get(user.id) || null, configured: !!apiKey || !!options.provider, timezone, day, model, billing };
+    return { user: publicUser(user), limits: limitsFor(db, user), usage: usageFor(db, user.id, day), latest: lastFor(user.id), history: historyFor(user.id), chats: chatsFor(user.id), job: jobs.get(user.id) || null, configured: !!apiKey || !!options.provider, timezone, day, model, billing };
   }
   async function provider(content, maxTokens, history = []) {
     if (options.provider) return options.provider(content, maxTokens, history);
@@ -156,8 +161,14 @@ export async function createApplication(options = {}) {
     let reserved = false, sent = false, saved = false;
     try {
       const data = await receiveUpload(req, folder, limits);
+      const requestedChat = data.chatId === undefined ? lastFor(user.id)?.chatId : data.chatId;
+      const existingChat = requestedChat && requestedChat !== 'new'
+        ? db.prepare('SELECT chat_id,chat_title FROM latest WHERE user_id=? AND chat_id=? LIMIT 1').get(user.id, requestedChat) : null;
+      if (requestedChat && requestedChat !== 'new' && !existingChat) fail(404, 'Чат больше не хранится. Создайте новый чат.');
+      const chatId = existingChat?.chat_id || randomUUID();
+      const chatTitle = existingChat?.chat_title || data.prompt.replace(/\s+/g, ' ').trim().slice(0, 200);
       const prepared = await prepareContent(data.prompt, data.files, limits.inputTokens);
-      const context = conversationContext(db.prepare('SELECT prompt,answer,files,context FROM latest WHERE user_id=? ORDER BY created DESC,rowid DESC LIMIT 5').all(user.id), prepared, limits.inputTokens);
+      const context = conversationContext(db.prepare('SELECT prompt,answer,files,context FROM latest WHERE user_id=? AND chat_id=? ORDER BY created DESC,rowid DESC LIMIT 5').all(user.id, chatId), prepared, limits.inputTokens);
       const current = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
       if (current.blocked) fail(403, 'Аккаунт заблокирован.');
       const day = dayKey(timezone), used = usageFor(db, user.id, day);
@@ -183,14 +194,14 @@ export async function createApplication(options = {}) {
       db.exec('BEGIN IMMEDIATE');
       let removed;
       try {
-        db.prepare('INSERT INTO latest(user_id,id,prompt,answer,files,created,context) VALUES (?,?,?,?,?,?,?)').run(user.id, id, data.prompt, answer + suffix, JSON.stringify(metadata), Date.now(), data.files.length ? JSON.stringify(prepared.content) : null);
+        db.prepare('INSERT INTO latest(user_id,id,prompt,answer,files,created,context,chat_id,chat_title) VALUES (?,?,?,?,?,?,?,?,?)').run(user.id, id, data.prompt, answer + suffix, JSON.stringify(metadata), Date.now(), data.files.length ? JSON.stringify(prepared.content) : null, chatId, chatTitle);
         removed = db.prepare('SELECT id FROM latest WHERE user_id=? ORDER BY created DESC,rowid DESC LIMIT -1 OFFSET ?').all(user.id, HISTORY_LIMIT);
         for (const row of removed) db.prepare('DELETE FROM latest WHERE id=?').run(row.id);
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
       saved = true;
       for (const row of removed) await rm(path.join(uploads, row.id), { recursive: true, force: true }).catch(() => console.error('history_file_cleanup_failed'));
-      json(res, 200, { latest: lastFor(user.id), history: historyFor(user.id), context: { pairs: context.messages.length / 2, omittedAttachments: context.omittedAttachments }, usage: usageFor(db, user.id, day) });
+      json(res, 200, { latest: lastFor(user.id), history: historyFor(user.id), chats: chatsFor(user.id), context: { pairs: context.messages.length / 2, omittedAttachments: context.omittedAttachments }, usage: usageFor(db, user.id, day) });
     } catch (error) {
       if (reserved) {
         if (!sent || error.noCharge) db.prepare('DELETE FROM usage WHERE id=?').run(id);

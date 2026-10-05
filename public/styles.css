@@ -53,3 +53,5 @@
 @media print{.theme-toggle{display:none!important}}
 .history{min-height:0;overflow-y:auto;flex:1}.history .last-request{display:block;white-space:nowrap;text-overflow:ellipsis;min-height:44px;margin-bottom:4px}.sidebar-bottom{flex-shrink:0}#history-list:empty::after{content:'Здесь появятся ваши запросы';font-size:.8rem;color:#8995aa}
 @media print{#messages:has(.print-target)>section:not(.print-target){display:none!important}}
+.topbar>div{flex:1 1 160px;min-width:0}.topbar h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.history .last-request.active{background:#edf2ff;color:#2455e6;border-left-color:#2455e6}#history-list:empty::after{content:'Здесь появятся ваши чаты'}
+@media screen{[data-theme="dark"] .history .last-request.active{background:#243a5c;color:#c8d8ff}}

@@ -37,7 +37,7 @@ async function fixture(t, provider, options = {}) {
   t.after(async () => { await app.close(); assert.ok(directory.startsWith(path.join(tmpdir(), 'company-assistant-test-'))); await rm(directory, { recursive: true, force: true }); });
   return { app, ids, base, call, login, directory };
 }
-function queryForm(prompt, files = []) { const data = new FormData(); data.append('prompt', prompt); for (const [name, contents, type] of files) data.append('files', new Blob([contents], { type: type || 'text/plain' }), name); return data; }
+function queryForm(prompt, files = [], chatId) { const data = new FormData(); data.append('prompt', prompt); if (chatId !== undefined) data.append('chatId', chatId); for (const [name, contents, type] of files) data.append('files', new Blob([contents], { type: type || 'text/plain' }), name); return data; }
 
 test('ruble display metadata and converted budgets enforce limits before provider calls', async t => {
   const env = { DISPLAY_CURRENCY:'RUB', ACCOUNTING_RUB_PER_USD:'84.4283', INPUT_USD_PER_MILLION:String(33.25/84.4283), OUTPUT_USD_PER_MILLION:String(166/84.4283) };
@@ -104,6 +104,7 @@ test('ten successful results survive; the eleventh removes the oldest files and 
   const state = await (await f.call('/api/state', { cookie: alice })).json();
   assert.equal(state.history.length, 10); assert.equal(state.history[0].prompt, 'Запрос 11');
   assert.equal(state.history.at(-1).prompt, 'Второй запрос');
+  assert.equal(state.chats.length, 1); assert.equal(state.chats[0].title, 'Прочитай');
   assert.equal((await (await f.call('/api/state', { cookie: bob })).json()).history.length, 0);
   assert.equal(f.app.db.prepare('SELECT SUM(input+output) n FROM usage').get().n, 1650);
 });
@@ -345,6 +346,61 @@ test('a new successful request extends attachment retention for the whole conver
   await f.app.cleanupHistory(next.created + 120000);
   await access(path.join(f.directory, 'uploads', first.id));
   assert.ok(f.app.db.prepare('SELECT context FROM latest WHERE id=?').get(first.id).context);
+});
+
+test('chat list uses first prompt only, resumes selected chat and isolates context and ownership', async t => {
+  const calls = [];
+  const f = await fixture(t, async (content, max, history) => {
+    calls.push({ prompt:content[0].text, history });
+    return { choices:[{message:{content:'Ответ '+content[0].text}}],usage:{prompt_tokens:20,completion_tokens:10} };
+  });
+  const cookie = await f.login('alice'), bob = await f.login('bob');
+  async function send(prompt, chatId) {
+    const response = await f.call('/api/query',{cookie,body:queryForm(prompt,[],chatId)});
+    assert.equal(response.status,200); return response.json();
+  }
+  const first = await send('Первый разговор', 'new'), chatA = first.latest.chatId;
+  const followup = await send('Уточнение A', chatA);
+  assert.equal(followup.chats.length,1); assert.equal(followup.chats[0].title,'Первый разговор');
+  assert.equal(calls[1].history[0].content,'Первый разговор');
+  const second = await send('Другой разговор', 'new'), chatB = second.latest.chatId;
+  assert.notEqual(chatA,chatB); assert.deepEqual(calls[2].history,[]);
+  assert.equal(second.chats.length,2);
+  const resumed = await send('Продолжение A', chatA);
+  assert.equal(resumed.latest.chatId,chatA); assert.equal(resumed.chats[0].title,'Первый разговор');
+  assert.equal(calls[3].history.length,4); assert.ok(!JSON.stringify(calls[3].history).includes('Другой разговор'));
+  const count = calls.length;
+  assert.equal((await f.call('/api/query',{cookie:bob,body:queryForm('Чужой чат',[],chatA)})).status,404);
+  assert.equal((await f.call('/api/query',{cookie,body:queryForm('Несуществующий',[],randomUUID())})).status,404);
+  assert.equal((await f.call('/api/query',{cookie,body:queryForm('Некорректный',[],'invalid')})).status,400);
+  assert.equal(calls.length,count);
+});
+
+test('failed new chats do not appear in history and do not change existing chat titles', async t => {
+  let reject = false;
+  const f = await fixture(t,async () => {
+    if (reject) throw Object.assign(new Error('Rejected'),{noCharge:true});
+    return { choices:[{message:{content:'Ответ'}}],usage:{prompt_tokens:20,completion_tokens:10} };
+  });
+  const cookie = await f.login('alice');
+  const first = await (await f.call('/api/query',{cookie,body:queryForm('Сохранённый чат',[],'new')})).json();
+  reject = true;
+  assert.equal((await f.call('/api/query',{cookie,body:queryForm('Неудачный новый чат',[],'new')})).status,502);
+  const state = await (await f.call('/api/state',{cookie})).json();
+  assert.deepEqual(state.chats,first.chats); assert.equal(state.history.length,1);
+});
+
+test('attachment inactivity is measured per chat, not per account', async t => {
+  const f = await fixture(t), cookie = await f.login('alice');
+  const first = (await (await f.call('/api/query',{cookie,body:queryForm('Чат A',[['a.txt','File A']],'new')})).json()).latest;
+  f.app.db.prepare('UPDATE latest SET created=? WHERE id=?').run(Date.now()-ATTACHMENT_IDLE_MS+60000, first.id);
+  const second = (await (await f.call('/api/query',{cookie,body:queryForm('Чат B',[['b.txt','File B']],'new')})).json()).latest;
+  await f.app.cleanupHistory(second.created+120000);
+  await assert.rejects(access(path.join(f.directory,'uploads',first.id)));
+  await access(path.join(f.directory,'uploads',second.id));
+  assert.equal(f.app.db.prepare('SELECT context FROM latest WHERE id=?').get(first.id).context,null);
+  assert.ok(f.app.db.prepare('SELECT context FROM latest WHERE id=?').get(second.id).context);
+  assert.equal((await f.call(`/api/exports/${first.id}.docx`,{cookie})).status,200);
 });
 
 test('Ranvik base URL uses compatible auth and preserves selected model', async t => {
