@@ -122,7 +122,11 @@ $('#query-form').onsubmit = async event => {
   } catch (error) { toast(error.message); }
   finally { sending = false; setBusy(false); if (state) await refreshState().catch(() => {}); }
 };
-$('#prompt').onkeydown = event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); $('#query-form').requestSubmit(); } };
+$('#prompt').onkeydown = event => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  if (!event.repeat) $('#query-form').requestSubmit();
+};
 
 function showDialog(title, content) { $('#dialog-title').textContent = title; $('#dialog-content').innerHTML = content; $('#close-dialog').hidden = false; if (!$('#form-dialog').open) $('#form-dialog').showModal(); }
 $('#close-dialog').onclick = () => $('#form-dialog').close();
