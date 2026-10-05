@@ -51,3 +51,5 @@
   [data-theme="dark"] a,[data-theme="dark"] .processing,[data-theme="dark"] .tabs button.active,[data-theme="dark"] .message.assistant .message-label{color:#9bbaff}
 }
 @media print{.theme-toggle{display:none!important}}
+.history{min-height:0;overflow-y:auto;flex:1}.history .last-request{display:block;white-space:nowrap;text-overflow:ellipsis;min-height:44px;margin-bottom:4px}.sidebar-bottom{flex-shrink:0}#history-list:empty::after{content:'Здесь появятся ваши запросы';font-size:.8rem;color:#8995aa}
+@media print{#messages:has(.print-target)>section:not(.print-target){display:none!important}}

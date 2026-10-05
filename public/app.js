@@ -35,7 +35,8 @@ function updateShell() {
   $('#service-banner').textContent = 'Интерфейс готов к работе. Для ответов администратору нужно добавить API-ключ на сервере.';
   $('#limit-warning').hidden = percent < 80 && state.usage.usd < state.limits.dailyUSD * .8;
   $('#limit-warning').textContent = `Вы приближаетесь к дневному лимиту. Использовано ${number(state.usage.tokens)} токенов; расчётный расход ${money(state.usage.usd)}. Сброс в полночь (${state.timezone}).`;
-  $('#last-request').disabled = !state.latest; $('#last-request').textContent = state.latest?.prompt || 'Здесь появится ваш запрос';
+  $('#history-list').innerHTML = (state.history || []).map(row => `<button class="last-request" data-history="${esc(row.id)}">${esc(row.prompt || 'Запрос с файлом')}</button>`).join('');
+  $('#history-list').querySelectorAll('[data-history]').forEach(button => button.onclick = () => scrollToRequest(button.dataset.history));
   if (state.user.mustChange && !$('#form-dialog').open) passwordDialog(true);
 }
 function download(content, filename, type = 'text/plain;charset=utf-8') {
@@ -52,13 +53,18 @@ function artifacts(answer) {
   return result;
 }
 function renderMessages() {
-  const last = state?.latest; $('#empty-chat').hidden = !!last;
-  if (!last) { $('#messages').replaceChildren(); return; }
+  const history = state?.history || (state?.latest ? [state.latest] : []);
+  $('#empty-chat').hidden = history.length > 0;
+  const container = $('#messages'); container.replaceChildren();
+  for (const last of [...history].reverse()) {
+  const group = document.createElement('section'); group.id = `request-${last.id}`;
+  container.append(group);
+  const $ = selector => group.querySelector(selector);
   const generated = artifacts(last.answer);
-  $('#messages').innerHTML = `<article class="message user"><div class="message-label">ВЫ · ${esc(date(last.created))}</div><div class="message-body">${esc(last.prompt)}</div><div class="message-files">${last.files.map(f => `<a href="/api/files/${esc(f.id)}" download>${esc(f.name)}</a>`).join('')}</div></article><article class="message assistant"><div class="message-label">ПОМОЩНИК</div><div class="message-body">${esc(last.answer)}</div><div class="message-actions"><button class="secondary" id="copy-answer">Копировать</button><button class="secondary" id="download-answer">Скачать .txt</button><button class="secondary" id="download-markdown">Скачать .md</button>${generated.map((f, i) => `<button class="secondary" data-artifact="${i}">Скачать ${esc(f.name)}</button>`).join('')}</div></article>`;
-  $('#copy-answer').onclick = async () => { try { await navigator.clipboard.writeText(last.answer); toast('Ответ скопирован'); } catch { toast('Браузер не разрешил копирование. Выделите текст или скачайте файл.'); } };
-  $('#download-answer').onclick = () => download(last.answer, 'Ответ.txt');
-  $('#download-markdown').onclick = () => download(last.answer, 'Ответ.md', 'text/markdown;charset=utf-8');
+  group.innerHTML = `<article class="message user"><div class="message-label">ВЫ · ${esc(date(last.created))}</div><div class="message-body">${esc(last.prompt)}</div><div class="message-files">${last.files.map(f => f.expired ? `<span class="small muted">${esc(f.name)} · удалён после 24 ч без активности</span>` : `<a href="/api/files/${esc(f.id)}" download>${esc(f.name)}</a>`).join('')}</div></article><article class="message assistant"><div class="message-label">ПОМОЩНИК</div><div class="message-body">${esc(last.answer)}</div><div class="message-actions"><button class="secondary" data-action="copy-answer">Копировать</button><button class="secondary" data-action="download-answer">Скачать .txt</button><button class="secondary" data-action="download-markdown">Скачать .md</button>${generated.map((f, i) => `<button class="secondary" data-artifact="${i}">Скачать ${esc(f.name)}</button>`).join('')}</div></article>`;
+  $('[data-action="copy-answer"]').onclick = async () => { try { await navigator.clipboard.writeText(last.answer); toast('Ответ скопирован'); } catch { toast('Браузер не разрешил копирование. Выделите текст или скачайте файл.'); } };
+  $('[data-action="download-answer"]').onclick = () => download(last.answer, 'Ответ.txt');
+  $('[data-action="download-markdown"]').onclick = () => download(last.answer, 'Ответ.md', 'text/markdown;charset=utf-8');
   for (const [format, label] of [['docx', 'Word'], ['xlsx', 'Excel']]) {
     const button = document.createElement('button'); button.className = 'secondary'; button.textContent = label;
     button.onclick = async () => {
@@ -73,11 +79,13 @@ function renderMessages() {
     $('.message-actions').append(button);
   }
   const print = document.createElement('button'); print.className = 'secondary'; print.textContent = 'Печать / PDF';
-  print.onclick = () => window.print(); $('.message-actions').append(print);
-  document.querySelectorAll('[data-artifact]').forEach(b => b.onclick = () => { const f = generated[Number(b.dataset.artifact)]; download(f.text, f.name); });
+  print.onclick = () => { group.classList.add('print-target'); window.print(); group.classList.remove('print-target'); }; $('.message-actions').append(print);
+  group.querySelectorAll('[data-artifact]').forEach(b => b.onclick = () => { const f = generated[Number(b.dataset.artifact)]; download(f.text, f.name); });
+  }
+  if (view === 'chat') container.lastElementChild?.scrollIntoView({ block: 'end' });
 }
 async function refreshState(render = false, options = {}) {
-  const next = await api('/api/state', options); const changed = state?.latest?.id !== next.latest?.id;
+  const next = await api('/api/state', options); const changed = JSON.stringify(state?.history) !== JSON.stringify(next.history);
   state = next; updateShell(); if (render || changed) renderMessages(); if (state.job) setBusy(true, state.job.phase); else if (!sending) setBusy(false);
 }
 $('#login-form').onsubmit = async event => {
@@ -89,7 +97,7 @@ async function logout() { try { await api('/api/logout', { method: 'POST' }); si
 $('#logout').onclick = logout;
 function showView(next) { view = next; $('#chat-view').hidden = view !== 'chat'; $('#admin-view').hidden = view !== 'admin'; $('#nav-chat').classList.toggle('active', view === 'chat'); $('#nav-admin').classList.toggle('active', view === 'admin'); $('#page-title').textContent = view === 'chat' ? 'Ваш рабочий помощник' : 'Управление пространством'; if (view === 'admin') loadAdmin(); }
 $('#nav-chat').onclick = () => showView('chat'); $('#nav-admin').onclick = () => showView('admin');
-$('#last-request').onclick = () => { showView('chat'); renderMessages(); $('#conversation').scrollTop = 0; };
+function scrollToRequest(id) { showView('chat'); document.getElementById(`request-${id}`)?.scrollIntoView({ block: 'start' }); }
 document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => { $('#prompt').value = button.dataset.prompt; $('#prompt').focus(); });
 function renderFiles() {
   $('#attachments').innerHTML = files.map((file, i) => `<div class="file-chip"><span>${esc(file.name)}</span><button type="button" data-remove="${i}" aria-label="Убрать ${esc(file.name)}">×</button></div>`).join('');
@@ -117,7 +125,8 @@ $('#query-form').onsubmit = async event => {
   sending = true; setBusy(true, 'Загружаем и читаем файлы…');
   try {
     const result = await api('/api/query', { method: 'POST', body: form });
-    state.latest = result.latest; state.usage = result.usage; $('#prompt').value = ''; files = []; renderFiles(); renderMessages(); updateShell();
+    state.latest = result.latest; state.history = result.history; state.usage = result.usage; $('#prompt').value = ''; files = []; renderFiles(); renderMessages(); updateShell();
+    if (result.context?.omittedAttachments) toast('Часть прежних вложений не вошла в контекст. При необходимости прикрепите их заново.');
     $('#conversation').scrollTop = $('#conversation').scrollHeight;
   } catch (error) { toast(error.message); }
   finally { sending = false; setBusy(false); if (state) await refreshState().catch(() => {}); }
@@ -143,7 +152,11 @@ function passwordDialog(required = false) {
 $('#profile-button').onclick = () => passwordDialog();
 function accountDialog() {
   showDialog('Аккаунт', `<p>${esc(state.user.name)}</p><p class="small muted">Сегодня: ${number(state.usage.tokens)} / ${number(state.limits.dailyTokens)} токенов</p><div class="stack"><button class="secondary" id="account-history" ${state.latest ? '' : 'disabled'}>Последний запрос</button><button class="secondary" id="account-password">Сменить пароль</button><button class="text-button" id="account-logout">Выйти из аккаунта</button></div>`);
-  $('#account-history').onclick = () => { $('#form-dialog').close(); $('#last-request').click(); $('#messages').scrollIntoView({ block: 'start' }); };
+  $('#account-history').textContent = 'История запросов';
+  $('#account-history').onclick = () => {
+    showDialog('История запросов', `<div class="stack">${(state.history || []).map(row => `<button class="secondary" data-jump="${esc(row.id)}">${esc((row.prompt || 'Запрос с файлом').slice(0, 100))} · ${esc(date(row.created))}</button>`).join('')}</div>`);
+    document.querySelectorAll('[data-jump]').forEach(button => button.onclick = () => { $('#form-dialog').close(); scrollToRequest(button.dataset.jump); });
+  };
   $('#account-password').onclick = () => passwordDialog(); $('#account-logout').onclick = logout;
 }
 const mobileAccount = document.createElement('button'); mobileAccount.className = 'text-button'; mobileAccount.textContent = 'Аккаунт'; mobileAccount.onclick = accountDialog; $('.topbar').append(mobileAccount);

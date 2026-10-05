@@ -12,6 +12,7 @@ import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
 import { exportAnswer } from '../lib/exports.mjs';
 import { budgetStored } from '../public/money.js';
+import { ATTACHMENT_IDLE_MS, conversationContext } from '../lib/history.mjs';
 
 const password = 'Test-only-password-123';
 async function fixture(t, provider, options = {}) {
@@ -83,7 +84,7 @@ test('monitoring summary is admin-only and excludes notification secrets', async
   assert.ok(!text.includes('must-not-leak'));assert.ok(!text.includes('chat_id'));
 });
 
-test('successful results replace previous files; accounts cannot read each other’s files', async t => {
+test('ten successful results survive; the eleventh removes the oldest files and exports, isolated per account', async t => {
   const f = await fixture(t), alice = await f.login('alice'), bob = await f.login('bob');
   const firstResponse = await f.call('/api/query', { cookie: alice, body: queryForm('Прочитай', [['one.txt', 'First document']]) });
   assert.equal(firstResponse.status, 200, JSON.stringify(await firstResponse.clone().json()));
@@ -92,10 +93,19 @@ test('successful results replace previous files; accounts cannot read each other
   assert.equal(await (await f.call(`/api/files/${first.files[0].id}`, { cookie: alice })).text(), 'First document');
   const next = await f.call('/api/query', { cookie: alice, body: queryForm('Второй запрос') });
   assert.equal(next.status, 200);
+  assert.equal((await f.call(`/api/files/${first.files[0].id}`, { cookie: alice })).status, 200);
+  for (let i = 3; i <= 10; i++) assert.equal((await f.call('/api/query', { cookie: alice, body: queryForm(`Запрос ${i}`) })).status, 200);
+  assert.equal((await f.call(`/api/exports/${first.id}.docx`, { cookie: alice })).status, 200);
+  assert.equal((await f.call('/api/query', { cookie: alice, body: queryForm('Запрос 11') })).status, 200);
   assert.equal((await f.call(`/api/files/${first.files[0].id}`, { cookie: alice })).status, 404);
+  assert.equal((await f.call(`/api/exports/${first.id}.docx`, { cookie: alice })).status, 404);
   await assert.rejects(access(path.join(f.directory, 'uploads', first.id)));
-  assert.equal(f.app.db.prepare('SELECT COUNT(*) n FROM latest').get().n, 1);
-  assert.equal(f.app.db.prepare('SELECT SUM(input+output) n FROM usage').get().n, 300);
+  assert.equal(f.app.db.prepare('SELECT COUNT(*) n FROM latest').get().n, 10);
+  const state = await (await f.call('/api/state', { cookie: alice })).json();
+  assert.equal(state.history.length, 10); assert.equal(state.history[0].prompt, 'Запрос 11');
+  assert.equal(state.history.at(-1).prompt, 'Второй запрос');
+  assert.equal((await (await f.call('/api/state', { cookie: bob })).json()).history.length, 0);
+  assert.equal(f.app.db.prepare('SELECT SUM(input+output) n FROM usage').get().n, 1650);
 });
 
 test('concurrency is per account, shared across devices; other users proceed', async t => {
@@ -230,8 +240,8 @@ test('Luna HTTP contract sends documents and photos, disables storage, bills usa
   assert.equal(request.thinking, undefined);
   assert.equal(request.store, false);
   assert.equal(request.service_tier, 'default');
-  assert.match(request.messages[1].content.find(x => x.text?.includes('Document content')).text, /doc.txt/);
-  assert.equal(request.messages[1].content.find(x => x.type === 'image_url').image_url.detail, 'high');
+  assert.match(request.messages.at(-1).content.find(x => x.text?.includes('Document content')).text, /doc.txt/);
+  assert.equal(request.messages.at(-1).content.find(x => x.type === 'image_url').image_url.detail, 'high');
   assert.match(body.latest.answer, /лимиту выходных токенов/);
   assert.ok(Math.abs(body.usage.usd - 0.00015) < 1e-10);
   for (const [failure, status, message] of [['quota', 502, /баланс или бюджет/], ['key', 502, /API-ключ/], ['timeout', 504, /вовремя/]]) {
@@ -260,7 +270,7 @@ test('office exports contain Cyrillic text and inert spreadsheet cells', async (
   await assert.rejects(exportAnswer('x'.repeat(500001), 'docx'), /слишком большой/);
 });
 
-test('exports require own current result, authentication and a changed password', async t => {
+test('exports require own retained result, authentication and a changed password', async t => {
   const f = await fixture(t), cookie = await f.login('alice'), other = await f.login('bob');
   const first = (await (await f.call('/api/query', { cookie, body: queryForm('Документ') })).json()).latest;
   const route = `/api/exports/${first.id}.docx`;
@@ -275,7 +285,66 @@ test('exports require own current result, authentication and a changed password'
   assert.equal((await f.call(route, { cookie })).status, 403);
   f.app.db.prepare('UPDATE users SET must_change=0 WHERE id=?').run(f.ids.alice);
   await f.call('/api/query', { cookie, body: queryForm('Следующий') });
-  assert.equal((await f.call(route, { cookie })).status, 404);
+  assert.equal((await f.call(route, { cookie })).status, 200);
+});
+
+test('conversation includes at most five private pairs and retained document content', async t => {
+  let sentHistory;
+  const f = await fixture(t, async (content, max, history) => {
+    sentHistory = history;
+    return { choices: [{ message: { content: 'Ответ ' + content[0].text } }], usage: { prompt_tokens: 20, completion_tokens: 10 } };
+  });
+  const cookie = await f.login('alice'), bob = await f.login('bob');
+  for (let i = 0; i < 7; i++) {
+    assert.equal((await f.call('/api/query', { cookie, body: queryForm(String(i), i === 5 ? [['source.txt', 'Secret document detail 789']] : []) })).status, 200);
+  }
+  assert.equal(sentHistory.length, 10);
+  assert.equal(sentHistory[0].content, '1'); assert.equal(sentHistory.at(-1).content, 'Ответ 5');
+  assert.match(JSON.stringify(sentHistory), /Secret document detail 789/);
+  const state = await (await f.call('/api/state', { cookie })).json();
+  assert.ok(!JSON.stringify(state).includes('Secret document detail 789'));
+  await f.call('/api/query', { cookie: bob, body: queryForm('Other account') });
+  assert.deepEqual(sentHistory, []);
+});
+
+test('24-hour idle cleanup removes original files and parsed context, preserves text and exports', async t => {
+  const f = await fixture(t), cookie = await f.login('alice');
+  const first = (await (await f.call('/api/query', { cookie, body: queryForm('Документ', [['source.txt','Heavy private content']]) })).json()).latest;
+  const start = first.created;
+  await f.app.cleanupHistory(start + ATTACHMENT_IDLE_MS - 1);
+  await access(path.join(f.directory, 'uploads', first.id));
+  f.app.jobs.set(f.ids.alice, { phase: 'Working' });
+  await f.app.cleanupHistory(start + ATTACHMENT_IDLE_MS);
+  await access(path.join(f.directory, 'uploads', first.id));
+  f.app.jobs.delete(f.ids.alice);
+  await f.app.cleanupHistory(start + ATTACHMENT_IDLE_MS);
+  await assert.rejects(access(path.join(f.directory, 'uploads', first.id)));
+  const row = f.app.db.prepare('SELECT * FROM latest WHERE id=?').get(first.id);
+  assert.equal(row.context, null); assert.equal(row.answer, first.answer);
+  assert.equal(JSON.parse(row.files)[0].expired, true);
+  assert.equal((await f.call(`/api/files/${first.files[0].id}`, { cookie })).status, 404);
+  assert.equal((await f.call(`/api/exports/${first.id}.docx`, { cookie })).status, 200);
+  assert.equal((await f.call(`/api/exports/${first.id}.xlsx`, { cookie })).status, 200);
+  await f.app.cleanupHistory(start + ATTACHMENT_IDLE_MS + 1);
+});
+
+test('context budget preserves new input and complete pairs, omits oversized old attachments', () => {
+  const row = { prompt: 'Before', answer: 'Answer', files: '[{"name":"photo.png"}]', context: JSON.stringify([{type:'image_url',image_url:{url:'data:image/png;base64,abc'}}]) };
+  const result = conversationContext([row], { upperBound: 600 }, 2000);
+  assert.equal(result.messages.length, 2); assert.equal(result.omittedAttachments, true);
+  assert.ok(result.upperBound <= 2000); assert.ok(!JSON.stringify(result).includes('base64'));
+  assert.equal(conversationContext([row], { upperBound: 1999 }, 2000).messages.length, 0);
+  assert.equal(conversationContext([{ ...row, files:'[]', prompt:'x'.repeat(2000) }], { upperBound:600 }, 2000).messages.length, 0);
+});
+
+test('a new successful request extends attachment retention for the whole conversation', async t => {
+  const f = await fixture(t), cookie = await f.login('alice');
+  const first = (await (await f.call('/api/query', { cookie, body: queryForm('Первый', [['old.txt','Keep during active chat']]) })).json()).latest;
+  f.app.db.prepare('UPDATE latest SET created=? WHERE id=?').run(Date.now() - ATTACHMENT_IDLE_MS + 60000, first.id);
+  const next = (await (await f.call('/api/query', { cookie, body: queryForm('Продолжить') })).json()).latest;
+  await f.app.cleanupHistory(next.created + 120000);
+  await access(path.join(f.directory, 'uploads', first.id));
+  assert.ok(f.app.db.prepare('SELECT context FROM latest WHERE id=?').get(first.id).context);
 });
 
 test('Ranvik base URL uses compatible auth and preserves selected model', async t => {

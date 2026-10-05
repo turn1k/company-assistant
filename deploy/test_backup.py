@@ -19,9 +19,9 @@ class BackupTest(unittest.TestCase):
             database=root/'source.sqlite'; config=root/'config'; config.write_text('TEST_CONFIG=1')
             marker='PRIVATE_CHAT_MUST_NOT_SURVIVE_12345'
             with contextlib.closing(sqlite3.connect(database)) as db:
-                db.executescript('CREATE TABLE users(id TEXT); CREATE TABLE latest(answer TEXT); CREATE TABLE sessions(token TEXT); CREATE TABLE login_attempts(key TEXT);')
+                db.executescript('CREATE TABLE users(id TEXT); CREATE TABLE latest(answer TEXT, context TEXT); CREATE TABLE sessions(token TEXT); CREATE TABLE login_attempts(key TEXT);')
                 db.execute('INSERT INTO users VALUES (?)', ('user',))
-                db.execute('INSERT INTO latest VALUES (?)', (marker,))
+                db.execute('INSERT INTO latest VALUES (?,?)', (marker,marker))
                 db.execute('INSERT INTO sessions VALUES (?)', (marker,))
                 db.commit()
             with patch.object(backup,'ROOT',destination), patch.object(backup,'DATA',database), patch.object(backup,'FILES',{'config/test':config}), patch.object(backup.subprocess,'check_output',return_value='test-commit'), contextlib.redirect_stdout(io.StringIO()):
