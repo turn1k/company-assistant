@@ -1,0 +1,28 @@
+name: Publish release 0.2.0
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release-0.2.0.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified desktop builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          gh run download 36978382306 --repo "$GITHUB_REPOSITORY" --dir release-assets
+          find release-assets -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) -exec cp {} release-assets/ \;
+          cd release-assets
+          sha256sum *.exe *.dmg *.zip > SHA256SUMS.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.2.0 release-assets/*.exe release-assets/*.dmg release-assets/*.zip release-assets/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Помощник компании 0.2.0" --notes-file docs/releases/0.2.0.md
