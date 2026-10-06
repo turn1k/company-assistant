@@ -15,6 +15,31 @@ import { budgetStored } from '../public/money.js';
 import { ATTACHMENT_IDLE_MS, conversationContext } from '../lib/history.mjs';
 
 const password = 'Test-only-password-123';
+test('deleting employee revokes access, removes files and identity, preserves anonymous accounting', async t => {
+  const f=await fixture(t), admin=await f.login('admin'), alice=await f.login('alice');
+  const route='/api/admin/users/'+f.ids.alice;
+  assert.equal((await f.call(route,{method:'DELETE'})).status,401);
+  assert.equal((await f.call(route,{method:'DELETE',cookie:alice})).status,403);
+  assert.equal((await f.call(route,{method:'DELETE',cookie:admin,origin:'https://evil.test'})).status,403);
+  assert.equal((await f.call('/api/admin/users/'+f.ids.admin,{method:'DELETE',cookie:admin})).status,400);
+  const result=await (await f.call('/api/query',{cookie:alice,body:queryForm('test',[['note.txt','hello']])})).json();
+  const before=await (await f.call('/api/admin',{cookie:admin})).json();
+  f.app.jobs.set(f.ids.alice,{phase:'test'});
+  assert.equal((await f.call(route,{method:'DELETE',cookie:admin})).status,409);
+  f.app.jobs.delete(f.ids.alice);
+  assert.equal((await f.call(route,{method:'DELETE',cookie:admin})).status,200);
+  assert.equal((await f.call('/api/state',{cookie:alice})).status,401);
+  assert.equal((await f.call('/api/login',{body:{login:'alice',password,device:randomUUID()}})).status,401);
+  assert.equal(f.app.db.prepare('SELECT id FROM users WHERE id=?').get(f.ids.alice),undefined);
+  for(const table of ['latest','sessions','usage']) assert.equal(f.app.db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE user_id=?`).get(f.ids.alice).n,0);
+  await assert.rejects(access(path.join(f.directory,'uploads',result.latest.id)));
+  const after=await (await f.call('/api/admin',{cookie:admin})).json();
+  assert.equal(after.users.length,2);
+  assert.equal(after.deletedUsage.month.usd,before.users.find(u=>u.id===f.ids.alice).month.usd);
+  assert.equal(after.deletedUsage.today.tokens,150);
+  assert.equal((await f.call(route,{method:'DELETE',cookie:admin})).status,404);
+  assert.equal((await f.call('/api/admin/users',{cookie:admin,body:{login:'alice',email:'alice@example.test',name:'New employee',password}})).status,201);
+});
 test('admin model switch persists and in-flight requests keep their original model tariff', async t => {
   const old=process.env.ACCOUNTING_RUB_PER_USD;
   process.env.ACCOUNTING_RUB_PER_USD='100';

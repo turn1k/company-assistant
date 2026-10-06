@@ -332,7 +332,7 @@ export async function createApplication(options = {}) {
             if (process.env.MONITOR_STATUS_FILE) {
               try { const report = JSON.parse(await readFile(process.env.MONITOR_STATUS_FILE, 'utf8')); monitoring = { checkedAt: report.checkedAt, checks: report.checks, telegramConfigured: report.telegramConfigured, deliveryPending: report.deliveryPending }; } catch { monitoring = { unavailable: true }; }
             }
-            return json(res, 200, { monitoring, geoIP: { enabled: !!geo, provider: process.env.GEOIP_PROVIDER || null }, users, sessions, limits: JSON.parse(db.prepare("SELECT value FROM settings WHERE key='limits'").get().value), online: sessions.filter(s => s.online).length, timezone, configured: !!apiKey || !!options.provider, uncertain: db.prepare("SELECT COUNT(*) n FROM usage WHERE status='uncertain'").get().n, prices: { input: modelConfig().input, output: modelConfig().output }, model: modelConfig().model, modelName: modelConfig().name, apiProvider: ranvik ? 'Ranvik' : baseURL.hostname, modelChoices: canSwitchModel ? modelChoices : [] });
+            return json(res, 200, { deletedUsage: { today: db.prepare('SELECT COALESCE(SUM(input+output),0) tokens FROM deleted_user_usage WHERE day=?').get(day), month: db.prepare('SELECT COALESCE(SUM(usd),0) usd FROM deleted_user_usage WHERE day LIKE ?').get(month+'%') }, monitoring, geoIP: { enabled: !!geo, provider: process.env.GEOIP_PROVIDER || null }, users, sessions, limits: JSON.parse(db.prepare("SELECT value FROM settings WHERE key='limits'").get().value), online: sessions.filter(s => s.online).length, timezone, configured: !!apiKey || !!options.provider, uncertain: db.prepare("SELECT (SELECT COUNT(*) FROM usage WHERE status='uncertain') + (SELECT COUNT(*) FROM deleted_user_usage WHERE status='uncertain') n").get().n, prices: { input: modelConfig().input, output: modelConfig().output }, model: modelConfig().model, modelName: modelConfig().name, apiProvider: ranvik ? 'Ranvik' : baseURL.hostname, modelChoices: canSwitchModel ? modelChoices : [] });
           }
           if (route === '/api/admin/users' && method === 'POST') {
             const body = await jsonBody(req);
@@ -344,6 +344,24 @@ export async function createApplication(options = {}) {
             audit(user.id, 'user_created', id); return json(res, 201, { id });
           }
           const targetId = route.match(/^\/api\/admin\/users\/([a-f0-9-]{36})$/)?.[1];
+          if (targetId && method === 'DELETE') {
+            if (user.id === targetId) fail(400, 'Нельзя удалить собственный аккаунт.');
+            const target = db.prepare('SELECT id FROM users WHERE id=?').get(targetId);
+            if (!target) fail(404, 'Аккаунт не найден.');
+            if (jobs.has(targetId)) fail(409, 'Сотрудник ещё ожидает ответ. Дождитесь завершения запроса.');
+            const files = db.prepare('SELECT id FROM latest WHERE user_id=?').all(targetId);
+            db.exec('BEGIN IMMEDIATE');
+            try {
+              db.prepare('INSERT INTO deleted_user_usage SELECT id,day,created,input,output,usd,status FROM usage WHERE user_id=?').run(targetId);
+              for (const table of ['usage', 'sessions', 'latest']) db.prepare(`DELETE FROM ${table} WHERE user_id=?`).run(targetId);
+              db.prepare('DELETE FROM users WHERE id=?').run(targetId);
+              audit(user.id, 'user_deleted', targetId);
+              db.exec('COMMIT');
+            } catch (error) { db.exec('ROLLBACK'); throw error; }
+            for (const file of files) pendingFileDeletes.add(file.id);
+            await cleanupHistory().catch(() => console.error('user_file_cleanup_pending'));
+            return json(res, 200, { ok: true });
+          }
           if (targetId && method === 'PATCH') {
             const body = await jsonBody(req), target = db.prepare('SELECT * FROM users WHERE id=?').get(targetId);
             if (!target) fail(404, 'Аккаунт не найден.');
