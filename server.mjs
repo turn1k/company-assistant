@@ -67,10 +67,15 @@ export async function createApplication(options = {}) {
   const kept = new Set(db.prepare('SELECT id FROM latest').all().map(r => r.id));
   for (const entry of await readdir(uploads, { withFileTypes: true })) if (entry.isDirectory() && /^[a-f0-9-]{36}$/.test(entry.name) && !kept.has(entry.name)) await rm(path.join(uploads, entry.name), { recursive: true, force: true });
 
+  const pendingFileDeletes = new Set();
   let cleanupRunning = null;
   function cleanupHistory(now = Date.now()) {
     if (cleanupRunning) return cleanupRunning;
     cleanupRunning = (async () => {
+      for (const id of pendingFileDeletes) {
+        await rm(path.join(uploads, id), { recursive: true, force: true });
+        pendingFileDeletes.delete(id);
+      }
       const idle = db.prepare('SELECT user_id,chat_id FROM latest GROUP BY user_id,chat_id HAVING MAX(created)<=?').all(now - ATTACHMENT_IDLE_MS);
       for (const { user_id, chat_id } of idle) {
         if (jobs.has(user_id)) continue;
@@ -267,6 +272,17 @@ export async function createApplication(options = {}) {
         }
         if (user.must_change) fail(403, 'Сначала смените временный пароль.');
         if (route === '/api/query' && method === 'POST') return await query(req, res, user);
+        const deleteChatId = route.match(/^\/api\/chats\/([a-f0-9-]{36})$/)?.[1];
+        if (deleteChatId && method === 'DELETE') {
+          const rows = db.prepare('SELECT id FROM latest WHERE user_id=? AND chat_id=?').all(user.id, deleteChatId);
+          if (!rows.length) fail(404, 'Чат больше не хранится.');
+          if (jobs.has(user.id)) fail(409, 'Дождитесь ответа перед удалением чата.');
+          db.prepare('DELETE FROM latest WHERE user_id=? AND chat_id=?').run(user.id, deleteChatId);
+          for (const row of rows) pendingFileDeletes.add(row.id);
+          await cleanupHistory().catch(() => console.error('chat_file_cleanup_pending'));
+          audit(user.id, 'chat_deleted', deleteChatId);
+          return json(res, 200, state(user));
+        }
         if (route.startsWith('/api/exports/') && method === 'GET') {
           const match = route.match(/^\/api\/exports\/([a-f0-9-]{36})\.(docx|xlsx)$/);
           const last = match && historyFor(user.id).find(row => row.id === match[1]);

@@ -403,6 +403,48 @@ test('attachment inactivity is measured per chat, not per account', async t => {
   assert.equal((await f.call(`/api/exports/${first.id}.docx`,{cookie})).status,200);
 });
 
+test('deleting a chat removes its messages, files and exports but preserves other chats and accounting', async t => {
+  const f = await fixture(t), cookie = await f.login('alice'), bob = await f.login('bob'), admin = await f.login('admin');
+  const first = (await (await f.call('/api/query',{cookie,body:queryForm('Delete this',[['a.txt','A']],'new')})).json()).latest;
+  const followup = (await (await f.call('/api/query',{cookie,body:queryForm('Follow-up',[['b.txt','B']],first.chatId)})).json()).latest;
+  const keep = (await (await f.call('/api/query',{cookie,body:queryForm('Keep this',[['c.txt','C']],'new')})).json()).latest;
+  const route = `/api/chats/${first.chatId}`;
+  assert.equal((await f.call(route,{method:'DELETE'})).status,401);
+  assert.equal((await f.call(route,{cookie:bob,method:'DELETE'})).status,404);
+  assert.equal((await f.call(route,{cookie:admin,method:'DELETE'})).status,404);
+  assert.equal((await f.call(route,{cookie,method:'DELETE',origin:'https://evil.test'})).status,403);
+  const response = await f.call(route,{cookie,method:'DELETE'});
+  assert.equal(response.status,200);
+  const state = await response.json(); assert.equal(state.chats.length,1); assert.equal(state.chats[0].id,keep.chatId);
+  assert.equal(state.history.length,1); assert.equal(state.usage.tokens,450);
+  for (const result of [first,followup]) {
+    await assert.rejects(access(path.join(f.directory,'uploads',result.id)));
+    assert.equal((await f.call(`/api/files/${result.files[0].id}`,{cookie})).status,404);
+    assert.equal((await f.call(`/api/exports/${result.id}.docx`,{cookie})).status,404);
+  }
+  assert.equal((await f.call(`/api/files/${keep.files[0].id}`,{cookie})).status,200);
+  assert.equal((await f.call(route,{cookie,method:'DELETE'})).status,404);
+  const empty = await (await f.call(`/api/chats/${keep.chatId}`,{cookie,method:'DELETE'})).json();
+  assert.deepEqual(empty.chats,[]); assert.deepEqual(empty.history,[]); assert.equal(empty.latest,null);
+});
+
+test('chat deletion is rejected during an in-flight request', async t => {
+  let release, reached;
+  const gate = new Promise(resolve=>release=resolve), entered = new Promise(resolve=>reached=resolve);
+  const f = await fixture(t,async content=>{
+    if (content[0].text === 'Wait') { reached(); await gate; }
+    return {choices:[{message:{content:'Answer'}}],usage:{prompt_tokens:10,completion_tokens:10}};
+  });
+  const cookie = await f.login('alice');
+  const first = (await (await f.call('/api/query',{cookie,body:queryForm('Start',[],'new')})).json()).latest;
+  const running = f.call('/api/query',{cookie,body:queryForm('Wait',[],first.chatId)});
+  await entered;
+  try { assert.equal((await f.call(`/api/chats/${first.chatId}`,{cookie,method:'DELETE'})).status,409); }
+  finally { release(); }
+  assert.equal((await running).status,200);
+  const state = await (await f.call('/api/state',{cookie})).json(); assert.equal(state.history.length,2);
+});
+
 test('Ranvik base URL uses compatible auth and preserves selected model', async t => {
   const saved = [process.env.INPUT_USD_PER_MILLION, process.env.OUTPUT_USD_PER_MILLION];
   process.env.INPUT_USD_PER_MILLION = '1'; process.env.OUTPUT_USD_PER_MILLION = '2';

@@ -40,8 +40,9 @@ function updateShell() {
   $('#service-banner').textContent = 'Интерфейс готов к работе. Для ответов администратору нужно добавить API-ключ на сервере.';
   $('#limit-warning').hidden = percent < 80 && state.usage.usd < state.limits.dailyUSD * .8;
   $('#limit-warning').textContent = `Вы приближаетесь к дневному лимиту. Использовано ${number(state.usage.tokens)} токенов; расчётный расход ${money(state.usage.usd)}. Сброс в полночь (${state.timezone}).`;
-  $('#history-list').innerHTML = (state.chats || []).map(chat => `<button class="last-request${chat.id === activeChatId ? ' active' : ''}" data-chat="${esc(chat.id)}" aria-pressed="${chat.id === activeChatId}" title="${esc(chat.title)}">${esc(chat.title)}</button>`).join('');
+  $('#history-list').innerHTML = (state.chats || []).map(chat => `<div class="chat-history-row"><button class="last-request${chat.id === activeChatId ? ' active' : ''}" data-chat="${esc(chat.id)}" aria-pressed="${chat.id === activeChatId}" title="${esc(chat.title)}">${esc(chat.title)}</button>${deleteChatButton(chat)}</div>`).join('');
   $('#history-list').querySelectorAll('[data-chat]').forEach(button => button.onclick = () => openChat(button.dataset.chat));
+  bindDeleteChats($('#history-list'));
   if (view === 'chat') $('#page-title').textContent = state.chats?.find(chat => chat.id === activeChatId)?.title || 'Новый чат';
   if (state.user.mustChange && !$('#form-dialog').open) passwordDialog(true);
 }
@@ -114,6 +115,27 @@ function openChat(id) {
   if (!id) $('#prompt').focus();
 }
 $('#new-chat').onclick = () => openChat(null);
+function deleteChatButton(chat) {
+  return `<button type="button" class="delete-chat" data-delete-chat="${esc(chat.id)}" aria-label="Удалить чат: ${esc(chat.title)}" title="Удалить чат"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button>`;
+}
+function bindDeleteChats(container) {
+  container.querySelectorAll('[data-delete-chat]').forEach(button => button.onclick = () => confirmDeleteChat(button.dataset.deleteChat));
+}
+function confirmDeleteChat(id) {
+  if (busy) { toast('Дождитесь ответа перед удалением чата.'); return; }
+  const chat = state.chats.find(chat => chat.id === id); if (!chat) return;
+  showDialog('Удалить чат?', `<p class="delete-chat-title">${esc(chat.title)}</p><p class="small muted">Сообщения и вложения этого чата будут удалены без возможности восстановления.</p><div class="dialog-actions"><button type="button" id="cancel-delete-chat" class="secondary">Отмена</button><button type="button" id="confirm-delete-chat" class="primary">Удалить чат</button></div><p id="delete-chat-error" class="error" role="alert"></p>`);
+  $('#cancel-delete-chat').onclick = () => $('#form-dialog').close();
+  $('#confirm-delete-chat').onclick = async event => {
+    const button = event.currentTarget; button.disabled = true;
+    try {
+      const next = await api(`/api/chats/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      drafts.delete(id);
+      if (activeChatId === id) { activeChatId = null; files = []; $('#prompt').value = ''; renderFiles(); }
+      state = next; $('#form-dialog').close(); updateShell(); renderMessages(); toast('Чат удалён');
+    } catch (error) { $('#delete-chat-error').textContent = error.message; button.disabled = false; }
+  };
+}
 document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => { $('#prompt').value = button.dataset.prompt; $('#prompt').focus(); });
 function renderFiles() {
   $('#attachments').innerHTML = files.map((file, i) => `<div class="file-chip"><span>${esc(file.name)}</span><button type="button" data-remove="${i}" aria-label="Убрать ${esc(file.name)}">×</button></div>`).join('');
@@ -169,10 +191,12 @@ function passwordDialog(required = false) {
 }
 $('#profile-button').onclick = () => passwordDialog();
 function accountDialog() {
-  showDialog('Аккаунт', `<p>${esc(state.user.name)}</p><p class="small muted">Сегодня: ${number(state.usage.tokens)} / ${number(state.limits.dailyTokens)} токенов</p><div class="stack"><button class="secondary" id="account-history" ${state.latest ? '' : 'disabled'}>Последний запрос</button><button class="secondary" id="account-password">Сменить пароль</button><button class="text-button" id="account-logout">Выйти из аккаунта</button></div>`);
+  showDialog('Аккаунт', `<p>${esc(state.user.name)}</p><p class="small muted">Сегодня: ${number(state.usage.tokens)} / ${number(state.limits.dailyTokens)} токенов</p><div class="stack"><button class="secondary" id="account-history">История чатов</button><button class="secondary" id="account-password">Сменить пароль</button><button class="text-button" id="account-logout">Выйти из аккаунта</button></div>`);
   $('#account-history').textContent = 'История чатов';
   $('#account-history').onclick = () => {
-    showDialog('История чатов', `<div class="stack">${(state.chats || []).map(chat => `<button class="secondary" data-open-chat="${esc(chat.id)}">${esc(chat.title)} · ${esc(date(chat.updated))}</button>`).join('')}</div>`);
+    showDialog('История чатов', `<button type="button" class="secondary" id="dialog-new-chat">＋ Новый чат</button><div class="stack chat-dialog-list">${(state.chats || []).map(chat => `<div class="chat-history-row"><button class="secondary chat-open" data-open-chat="${esc(chat.id)}">${esc(chat.title)}</button>${deleteChatButton(chat)}</div>`).join('')}</div>`);
+    $('#dialog-new-chat').onclick = () => { $('#form-dialog').close(); openChat(null); };
+    bindDeleteChats($('#dialog-content'));
     document.querySelectorAll('[data-open-chat]').forEach(button => button.onclick = () => { $('#form-dialog').close(); openChat(button.dataset.openChat); });
   };
   $('#account-password').onclick = () => passwordDialog(); $('#account-logout').onclick = logout;
