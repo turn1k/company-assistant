@@ -15,6 +15,45 @@ import { budgetStored } from '../public/money.js';
 import { ATTACHMENT_IDLE_MS, conversationContext } from '../lib/history.mjs';
 
 const password = 'Test-only-password-123';
+test('admin model switch persists and in-flight requests keep their original model tariff', async t => {
+  const old=process.env.ACCOUNTING_RUB_PER_USD;
+  process.env.ACCOUNTING_RUB_PER_USD='100';
+  t.after(()=>{if(old===undefined) delete process.env.ACCOUNTING_RUB_PER_USD; else process.env.ACCOUNTING_RUB_PER_USD=old;});
+  let release, entered;
+  const started=new Promise(r=>entered=r);
+  const gate=new Promise(r=>release=r);
+  const bodies=[];
+  const f=await fixture(t,null,{provider:undefined,apiKey:'fake-key',baseURL:'https://api.ranvik.ru/v1',providerFetch:async(url,opts)=>{
+    bodies.push(JSON.parse(opts.body));
+    if(bodies.length===1){entered();await gate;}
+    return Response.json({choices:[{message:{content:'OK'}}],usage:{prompt_tokens:100,completion_tokens:50}});
+  }});
+  const admin=await f.login('admin'), alice=await f.login('alice');
+  assert.equal((await f.call('/api/admin/model',{body:{model:'gpt-6-luna'}})).status,401);
+  assert.equal((await f.call('/api/admin/model',{cookie:alice,body:{model:'gpt-6-luna'}})).status,403);
+  assert.equal((await f.call('/api/admin/model',{cookie:admin,origin:'https://evil.test',body:{model:'gpt-6-luna'}})).status,403);
+  assert.equal((await f.call('/api/admin/model',{cookie:admin,body:{model:'other'}})).status,400);
+  assert.equal((await f.call('/api/admin/model',{cookie:admin,body:{model:'gpt-6-luna'}})).status,200);
+  const pending=f.call('/api/query',{cookie:alice,body:queryForm('test')});
+  await started;
+  assert.equal((await f.call('/api/admin/model',{cookie:admin,body:{model:'claude-sonnet-5-5'}})).status,200);
+  release();
+  assert.equal((await pending).status,200);
+  assert.equal(bodies[0].model,'gpt-6-luna');
+  assert.equal(bodies[0].reasoning_effort,'none');
+  let usage=f.app.db.prepare('SELECT usd FROM usage').get();
+  assert.ok(Math.abs(usage.usd-(100*33.25+50*166)/1e8)<1e-12);
+  assert.equal((await f.call('/api/query',{cookie:alice,body:queryForm('second')})).status,200);
+  assert.equal(bodies[1].model,'claude-sonnet-5-5');
+  assert.equal(bodies[1].reasoning_effort,undefined);
+  const report=await (await f.call('/api/admin',{cookie:admin})).json();
+  assert.equal(report.apiProvider,'Ranvik'); assert.equal(report.modelName,'Claude Sonnet 5.5');
+  assert.equal(report.prices.input,2.66);
+  const sum=f.app.db.prepare('SELECT SUM(usd) total FROM usage').get().total;
+  assert.ok(Math.abs(sum-((100*33.25+50*166)+(100*266+50*1330))/1e8)<1e-12);
+  const reopened=await createApplication({dataDir:f.directory,origin:'http://localhost',baseURL:'https://api.ranvik.ru/v1',apiKey:'fake-key'});
+  try {assert.equal(reopened.db.prepare("SELECT value FROM settings WHERE key='model'").get().value,'claude-sonnet-5-5');} finally {await reopened.close();}
+});
 async function fixture(t, provider, options = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'company-assistant-test-'));
   const app = await createApplication({ dataDir: directory, origin: 'http://localhost', provider: provider || (async () => ({ choices: [{ message: { content: 'Проверенный ответ' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } })), ...options });

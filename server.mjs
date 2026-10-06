@@ -38,21 +38,32 @@ export async function createApplication(options = {}) {
   const timezone = process.env.COMPANY_TIMEZONE || 'Europe/Moscow';
   dayKey(timezone); // Validate at startup.
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL || 'gpt-6-luna';
+  const initialModel = process.env.OPENAI_MODEL || 'gpt-6-luna';
   const baseURL = new URL(options.baseURL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
   if (baseURL.protocol !== 'https:' || baseURL.username || baseURL.password || baseURL.search || baseURL.hash) throw new Error('OPENAI_BASE_URL должен быть HTTPS-адресом API без пароля и параметров.');
   const endpoint = baseURL.href.replace(/\/$/, '') + '/chat/completions';
   const directOpenAI = baseURL.origin === 'https://api.openai.com';
-  const ranvikLuna = baseURL.origin === 'https://api.ranvik.ru' && model === 'gpt-6-luna';
+  const ranvik = baseURL.origin === 'https://api.ranvik.ru';
   const pricesConfigured = directOpenAI || !!(process.env.INPUT_USD_PER_MILLION && process.env.OUTPUT_USD_PER_MILLION);
   const inputPrice = Number(process.env.INPUT_USD_PER_MILLION || 0.10);
   const outputPrice = Number(process.env.OUTPUT_USD_PER_MILLION || 0.50);
   if (![inputPrice, outputPrice].every(n => Number.isFinite(n) && n > 0)) throw new Error('Некорректная цена токенов.');
-  const estimateUSD = (input, output) => (input * inputPrice + output * outputPrice) / 1e6;
   const currency = process.env.DISPLAY_CURRENCY || 'USD';
   const rubPerUSD = Number(process.env.ACCOUNTING_RUB_PER_USD || 1);
   if (!['USD', 'RUB'].includes(currency) || !Number.isFinite(rubPerUSD) || rubPerUSD <= 0 || (currency === 'RUB' && !process.env.ACCOUNTING_RUB_PER_USD)) throw new Error('Для учёта в рублях задайте положительный ACCOUNTING_RUB_PER_USD.');
   const billing = { currency, rubPerUSD };
+  const modelChoices = [
+    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', inputRUB: 266, outputRUB: 1330 },
+    { id: 'gpt-6-luna', name: 'GPT-6 Luna', inputRUB: 33.25, outputRUB: 166 }
+  ];
+  const canSwitchModel = ranvik && !!process.env.ACCOUNTING_RUB_PER_USD;
+  function modelConfig() {
+    const saved = canSwitchModel ? db.prepare("SELECT value FROM settings WHERE key='model'").get()?.value : null;
+    const model = modelChoices.some(m => m.id === saved) ? saved : initialModel;
+    const choice = canSwitchModel && modelChoices.find(m => m.id === model);
+    return { model, name: choice?.name || model, input: choice ? choice.inputRUB / rubPerUSD : inputPrice, output: choice ? choice.outputRUB / rubPerUSD : outputPrice };
+  }
+  const estimateUSD = (input, output, config) => (input * config.input + output * config.output) / 1e6;
   const jobs = new Map();
   const maxConcurrent = Math.max(1, Math.min(100, Number(process.env.MAX_CONCURRENT_REQUESTS || 20)));
   const dummy = await hashPassword(randomBytes(24).toString('hex'));
@@ -134,9 +145,11 @@ export async function createApplication(options = {}) {
   }
   function state(user) {
     const day = dayKey(timezone);
-    return { user: publicUser(user), limits: limitsFor(db, user), usage: usageFor(db, user.id, day), latest: lastFor(user.id), history: historyFor(user.id), chats: chatsFor(user.id), job: jobs.get(user.id) || null, configured: !!apiKey || !!options.provider, timezone, day, model, billing };
+    return { user: publicUser(user), limits: limitsFor(db, user), usage: usageFor(db, user.id, day), latest: lastFor(user.id), history: historyFor(user.id), chats: chatsFor(user.id), job: jobs.get(user.id) || null, configured: !!apiKey || !!options.provider, timezone, day, model: modelConfig().model, billing };
   }
-  async function provider(content, maxTokens, history = []) {
+  async function provider(content, maxTokens, history = [], config = modelConfig()) {
+    const model = config.model;
+    const ranvikLuna = ranvik && model === 'gpt-6-luna';
     if (options.provider) return options.provider(content, maxTokens, history);
     const response = await (options.providerFetch || fetch)(endpoint, {
       method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -156,8 +169,9 @@ export async function createApplication(options = {}) {
     return response.json();
   }
   async function query(req, res, user) {
+    const config = modelConfig(); // Keep the model and its tariff together for this entire request.
     await cleanupHistory();
-    if (!pricesConfigured && !options.provider) fail(503, 'Администратору нужно настроить тарифы API для учёта расходов.');
+    if (!pricesConfigured && !(canSwitchModel && modelChoices.some(m => m.id === config.model)) && !options.provider) fail(503, 'Администратору нужно настроить тарифы API для учёта расходов.');
     if (!apiKey && !options.provider) fail(503, 'Сервис ещё не подключён. Администратору нужно добавить API-ключ на сервере.');
     if (jobs.has(user.id)) fail(409, 'На этом аккаунте уже выполняется запрос. Дождитесь ответа.');
     if (jobs.size >= maxConcurrent) fail(503, 'Сервер занят. Повторите через несколько секунд.');
@@ -178,17 +192,17 @@ export async function createApplication(options = {}) {
       if (current.blocked) fail(403, 'Аккаунт заблокирован.');
       const day = dayKey(timezone), used = usageFor(db, user.id, day);
       const budget = context.upperBound + limits.outputTokens;
-      const cost = estimateUSD(context.upperBound, limits.outputTokens);
+      const cost = estimateUSD(context.upperBound, limits.outputTokens, config);
       if (used.tokens + budget > limits.dailyTokens) fail(429, 'Оставшегося дневного лимита токенов недостаточно для этого запроса. Сократите запрос или обратитесь к администратору.');
       if (used.usd + cost > limits.dailyUSD) fail(429, 'Достигнут дневной денежный лимит. Обратитесь к администратору.');
       db.prepare('INSERT INTO usage VALUES (?,?,?,?,?,?,?,?)').run(id, user.id, day, Date.now(), context.upperBound, limits.outputTokens, cost, 'reserved');
       reserved = true; jobs.set(user.id, { phase: 'Готовим ответ', started: Date.now() });
       sent = true;
-      const result = await provider(prepared.content, limits.outputTokens, context.messages);
+      const result = await provider(prepared.content, limits.outputTokens, context.messages, config);
       const answer = result.choices?.[0]?.message?.content || result.choices?.[0]?.message?.refusal;
       const input = result.usage?.prompt_tokens, output = result.usage?.completion_tokens;
       if (Number.isSafeInteger(input) && input >= 0 && Number.isSafeInteger(output) && output >= 0) {
-        db.prepare('UPDATE usage SET input=?,output=?,usd=?,status=? WHERE id=?').run(input, output, estimateUSD(input, output), 'complete', id);
+        db.prepare('UPDATE usage SET input=?,output=?,usd=?,status=? WHERE id=?').run(input, output, estimateUSD(input, output, config), 'complete', id);
         reserved = false;
       } else {
         db.prepare("UPDATE usage SET status='uncertain' WHERE id=?").run(id); reserved = false;
@@ -302,6 +316,14 @@ export async function createApplication(options = {}) {
         }
         if (route.startsWith('/api/admin')) {
           if (user.role !== 'admin') fail(403, 'Доступ только для администратора.');
+          if (route === '/api/admin/model' && method === 'POST') {
+            if (!canSwitchModel) fail(503, 'Переключение моделей требует Ranvik и настроенного курса учёта расходов.');
+            const body = await jsonBody(req);
+            if (!modelChoices.some(m => m.id === body.model)) fail(400, 'Выберите Sonnet или Luna.');
+            db.prepare("INSERT INTO settings(key,value) VALUES ('model',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(body.model);
+            audit(user.id, 'model_changed', body.model);
+            return json(res, 200, { model: modelConfig().model });
+          }
           if (route === '/api/admin' && method === 'GET') {
             const now = Date.now(), day = dayKey(timezone), month = day.slice(0, 7);
             const sessions = db.prepare('SELECT s.id,s.user_id,s.created,s.seen,s.expires,s.ip,s.agent,s.location,u.name,u.login FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.expires>? AND u.blocked=0 ORDER BY s.seen DESC').all(now).map(s => ({ ...s, device: deviceLabel(s.agent), location: location(s.ip), online: s.seen > now - 120000, current: s.id === session.id, agent: undefined }));
@@ -310,7 +332,7 @@ export async function createApplication(options = {}) {
             if (process.env.MONITOR_STATUS_FILE) {
               try { const report = JSON.parse(await readFile(process.env.MONITOR_STATUS_FILE, 'utf8')); monitoring = { checkedAt: report.checkedAt, checks: report.checks, telegramConfigured: report.telegramConfigured, deliveryPending: report.deliveryPending }; } catch { monitoring = { unavailable: true }; }
             }
-            return json(res, 200, { monitoring, geoIP: { enabled: !!geo, provider: process.env.GEOIP_PROVIDER || null }, users, sessions, limits: JSON.parse(db.prepare("SELECT value FROM settings WHERE key='limits'").get().value), online: sessions.filter(s => s.online).length, timezone, configured: !!apiKey || !!options.provider, uncertain: db.prepare("SELECT COUNT(*) n FROM usage WHERE status='uncertain'").get().n, prices: { input: inputPrice, output: outputPrice }, model });
+            return json(res, 200, { monitoring, geoIP: { enabled: !!geo, provider: process.env.GEOIP_PROVIDER || null }, users, sessions, limits: JSON.parse(db.prepare("SELECT value FROM settings WHERE key='limits'").get().value), online: sessions.filter(s => s.online).length, timezone, configured: !!apiKey || !!options.provider, uncertain: db.prepare("SELECT COUNT(*) n FROM usage WHERE status='uncertain'").get().n, prices: { input: modelConfig().input, output: modelConfig().output }, model: modelConfig().model, modelName: modelConfig().name, apiProvider: ranvik ? 'Ranvik' : baseURL.hostname, modelChoices: canSwitchModel ? modelChoices : [] });
           }
           if (route === '/api/admin/users' && method === 'POST') {
             const body = await jsonBody(req);
