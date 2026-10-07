@@ -18,8 +18,8 @@
     "jszip": "3.10.2",
     "mammoth": "^1.11.0",
     "maxmind": "^5.0.0",
-    "pdfjs-dist": "^5.4.0",
-    "sharp": "^0.34.0"
+    "pdfjs-dist": "^6.2.108",
+    "sharp": "^0.35.5"
   },
   "packageManager": "pnpm@11.25.0"
 }

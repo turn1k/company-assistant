@@ -2,3 +2,5 @@ allowBuilds:
   electron: true
   app-builder-bin: true
   electron-winstaller: false
+overrides:
+  http-cache-semantics: 4.3.0

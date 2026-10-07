@@ -15,6 +15,20 @@ import { budgetStored } from '../public/money.js';
 import { ATTACHMENT_IDLE_MS, conversationContext } from '../lib/history.mjs';
 
 const password = 'Test-only-password-123';
+test('temporary password cannot disclose retained conversations and login limits resist guessing', async t => {
+  const f=await fixture(t), alice=await f.login('alice'), admin=await f.login('admin');
+  const reply=await (await f.call('/api/query',{cookie:alice,body:queryForm('private content')})).json();
+  assert.equal((await f.call('/api/admin/users/'+f.ids.alice,{method:'PATCH',cookie:admin,body:{password:'Temporary-reset-12345'}})).status,200);
+  assert.equal((await f.call('/api/state',{cookie:alice})).status,401);
+  const login=await f.call('/api/login',{body:{login:'alice',password:'Temporary-reset-12345',device:randomUUID()}});
+  const cookie=login.headers.get('set-cookie').split(';')[0], body=await login.json();
+  assert.equal(body.user.mustChange,true);assert.equal(body.latest,null);assert.deepEqual(body.history,[]);assert.deepEqual(body.chats,[]);
+  const state=await (await f.call('/api/state',{cookie})).json();assert.deepEqual(state.history,[]);
+  assert.equal((await f.call('/api/exports/'+reply.latest.id+'.docx',{cookie})).status,403);
+  for(let i=0;i<12;i++) assert.equal((await f.call('/api/login',{body:{login:'nonexistent',password:'incorrect'}})).status,401);
+  assert.equal((await f.call('/api/login',{body:{login:'nonexistent',password:'incorrect'}})).status,429);
+  assert.equal((await f.call('/api/login',{body:{login:"' OR 1=1 --",password:'incorrect'}})).status,401);
+});
 test('deleting employee revokes access, removes files and identity, preserves anonymous accounting', async t => {
   const f=await fixture(t), admin=await f.login('admin'), alice=await f.login('alice');
   const route='/api/admin/users/'+f.ids.alice;

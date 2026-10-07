@@ -145,6 +145,7 @@ export async function createApplication(options = {}) {
   }
   function state(user) {
     const day = dayKey(timezone);
+    if (user.must_change) return { user: publicUser(user), limits: limitsFor(db, user), usage: usageFor(db, user.id, day), latest: null, history: [], chats: [], job: null, configured: !!apiKey || !!options.provider, timezone, day, model: modelConfig().model, billing };
     return { user: publicUser(user), limits: limitsFor(db, user), usage: usageFor(db, user.id, day), latest: lastFor(user.id), history: historyFor(user.id), chats: chatsFor(user.id), job: jobs.get(user.id) || null, configured: !!apiKey || !!options.provider, timezone, day, model: modelConfig().model, billing };
   }
   async function provider(content, maxTokens, history = [], config = modelConfig()) {
@@ -189,7 +190,7 @@ export async function createApplication(options = {}) {
       const prepared = await prepareContent(data.prompt, data.files, limits.inputTokens);
       const context = conversationContext(db.prepare('SELECT prompt,answer,files,context FROM latest WHERE user_id=? AND chat_id=? ORDER BY created DESC,rowid DESC LIMIT 5').all(user.id, chatId), prepared, limits.inputTokens);
       const current = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
-      if (current.blocked) fail(403, 'Аккаунт заблокирован.');
+      if (!current || current.blocked || current.must_change || current.password !== user.password) fail(403, 'Доступ изменён. Войдите снова.');
       const day = dayKey(timezone), used = usageFor(db, user.id, day);
       const budget = context.upperBound + limits.outputTokens;
       const cost = estimateUSD(context.upperBound, limits.outputTokens, config);
@@ -273,6 +274,8 @@ export async function createApplication(options = {}) {
           loginRate(`password:${user.id}`, 12);
           if (!await verifyPassword(body.current, user.password)) fail(400, 'Текущий пароль неверный.');
           const password = await hashPassword(body.password);
+          const fresh = authenticate(req);
+          if (fresh.user.password !== user.password) fail(409, 'Пароль уже изменён. Войдите снова.');
           db.prepare('UPDATE users SET password=?,must_change=0 WHERE id=?').run(password, user.id);
           db.prepare('DELETE FROM sessions WHERE user_id=? AND id<>?').run(user.id, session.id);
           const token = randomBytes(32).toString('hex'); db.prepare('UPDATE sessions SET token=? WHERE id=?').run(sha(token), session.id); setCookie(res, token, Math.max(1, Math.floor((session.expires - Date.now()) / 1000)));

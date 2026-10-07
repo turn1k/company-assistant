@@ -1,5 +1,15 @@
 node_modules/
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.sqlite*
+*.db
+*admin-access*
+*credentials*
+__pycache__/
+.init-admin.mjs
 data/
 desktop/dist/
 *.log
